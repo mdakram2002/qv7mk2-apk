@@ -1,0 +1,5 @@
+.error-plot{height:105px;margin-top:10px}
+.table-foot button{border:0;background:none;color:#287b68;font-size:9px;padding:2px}
+.table-foot button:disabled{color:#aeb9be;cursor:default}
+.quality-cards{grid-template-columns:repeat(5,minmax(0,1fr))}
+@media(max-width:760px){.quality-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}

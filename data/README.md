@@ -1,0 +1,7 @@
+# Data provenance and schemas
+
+Production measurements in this directory are generated only from Elexon BMRS Insights FUELHH (actual generation, `fuelType=WIND`) and WINDFOR (forecast versions). Raw JSON should preserve upstream records; processed CSV uses UTF-8, stable headers, UTC ISO timestamps, and MW. Null means unavailable/invalid; zero remains a valid measurement. Run `python scripts/ingest_january.py` to regenerate.
+
+Expected outputs: `raw/fuelhh_wind_january_2026.json`, `raw/windfor_january_2026.json`; processed actuals, versions, matched intervals, daily and monthly accuracy CSVs; `metadata/ingestion_report.json`. Actuals include `startTime,settlementDate,settlementPeriod,generation_mw,source_dataset`. Forecasts include `startTime,publishTime,generation_mw,source_dataset`. Matched rows include decision cutoff, selected publication, errors, availability and quality status. Summary rows include expected/matched counts, coverage and MAE/RMSE/bias/WAPE.
+
+The current ingestion returned 1,488 actual half-hours and 18,080 January-delivery forecast versions across 744 hourly delivery starts. Forecasts are not interpolated to the intervening half-hours; 744 slots remain missing and coverage is 50%. Invalid and out-of-period rows remain in raw JSON and are counted separately. Exact duplicate rows are collapsed; conflicting rows at the same key use a deterministic sorted-JSON tie break and are counted.
