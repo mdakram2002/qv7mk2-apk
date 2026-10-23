@@ -1,18 +1,18 @@
-# API reference
+﻿# API reference
 
-Prefix: `/api/v1`; interactive OpenAPI UI: `/docs`.
+All routes use the `/api/v1` prefix. The interactive API documentation is available at `/docs`.
 
-| Method/path | Purpose |
+| Method and path | What it returns |
 |---|---|
 | `GET /health` | Service status and readiness |
-| `GET /metadata` | Scope, sources, cutoff and ingestion report |
-| `GET /summary` | Aggregate metrics and coverage; accepts `start_date`, `end_date`, `cutoff_time` |
-| `GET /timeseries` | Interval series; accepts same date and cutoff parameters |
-| `GET /accuracy/daily`, `/accuracy/monthly` | Daily/monthly scores |
-| `GET /intervals` | Paginated interval observations and quality filtering |
-| `GET /forecast-versions?start_time=...` | All publications for one delivery interval and cutoff eligibility |
+| `GET /metadata` | Analysis scope, data sources, cutoff, and ingestion report |
+| `GET /summary` | Aggregate metrics and coverage; accepts `start_date`, `end_date`, and `cutoff_time` |
+| `GET /timeseries` | Interval time series; accepts the same date and cutoff parameters |
+| `GET /accuracy/daily`, `GET /accuracy/monthly` | Daily or monthly accuracy scores |
+| `GET /intervals` | Paginated interval records with quality filters |
+| `GET /forecast-versions?start_time=...` | Forecast publications for one delivery interval and their cutoff eligibility |
 | `GET /data-quality` | Ingestion quality report |
-| `GET /export/{actuals,forecasts,matched,daily-accuracy}.csv` | Download CSV (`Content-Disposition: attachment`) |
+| `GET /export/{actuals,forecasts,matched,daily-accuracy}.csv` | CSV download with an attachment filename |
 | `GET /export/ingestion-report.json` | Ingestion report download |
 
-Only January 2026 ranges are accepted. Page size is limited to 500. Cutoff defaults to 10:00 Europe/London.
+The API accepts date ranges within January 2026. Page sizes are limited to 500 records. The forecast cutoff defaults to 10:00 Europe/London on the day before delivery.

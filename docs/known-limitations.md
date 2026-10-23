@@ -1,10 +1,10 @@
 # Known limitations
 
-- Historical delivery metrics depend on successful retrieval of historical WINDFOR publication versions. No values should be implied if ingestion failed.
-- The WINDFOR query is partitioned into seven-day publication windows. A 14-day pre-delivery start is used as an analytical coverage assumption; verify against Elexon's current horizon documentation when requirements change.
-- The retrieved WINDFOR versions have hourly delivery starts while FUELHH actuals are half-hourly. No interpolation or duplication is applied; the alternate half-hour slots are missing forecast records, leaving 50% matched coverage for this January retrieval.
-- Official live API checks confirmed FUELHH history and that a multi-week WINDFOR request fails with HTTP 400 due to its seven-day maximum. The filtered FUELHH stream request returned current data, confirming stream is unsuitable for backfill.
-- Default 10:00 D-1 is not a verified procurement gate or contractual cutoff.
-- The API loads January CSVs into memory and is intended for a small analytical dataset, not high-concurrency operational use.
-- No public frontend/backend deployment, credentials, or public URLs were available in this environment. Deployment templates are prepared but must be configured and published by an account owner.
-- A Vercel frontend build embeds its backend URL at build time. Configure `VITE_API_URL`, then set backend CORS to the deployed origin.
+- Historical analysis depends on retrieving the relevant WINDFOR publication versions. If ingestion fails, affected values remain unavailable.
+- WINDFOR history is requested in publication-time windows of no more than seven days. The January retrieval starts 14 days before delivery as a coverage assumption; check Elexon's current horizon documentation if requirements change.
+- Retrieved forecasts have hourly delivery starts, while FUELHH actuals are half-hourly. WindLens does not interpolate or duplicate forecasts, so January has forecasts for 744 of 1,488 intervals (50% coverage).
+- Live API checks confirmed that FUELHH history is available through its dataset endpoint, while its filtered stream returned current data. A multi-week WINDFOR request failed with HTTP 400, so neither stream nor long date ranges are used for historical backfill.
+- The default 10:00 Europe/London day-ahead cutoff is an analytical choice, not a confirmed procurement gate or contractual deadline.
+- The API loads January CSVs into memory. It is suitable for this small analysis, but has not been designed for heavy concurrent use.
+- There was no public deployment, service credentials, or public URL available when this was written. The deployment templates still need to be configured and published by an account owner.
+- Vercel embeds the backend URL when it builds the frontend. Set `VITE_API_URL` before building and configure backend CORS to allow the deployed frontend origin.

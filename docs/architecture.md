@@ -1,4 +1,4 @@
-# Architecture
+﻿# Architecture
 
 ```mermaid
 flowchart LR
@@ -10,9 +10,10 @@ flowchart LR
  Q --> U[React + Recharts WindLens]
 ```
 
-The project is a modular monolith. Ingestion is a reproducible offline pipeline, so normal dashboard requests never download the full upstream history. Data selection and metric functions are separate from FastAPI routes. Processed CSVs are loaded through a bounded in-process cache keyed by file modification time; re-ingestion invalidates that cache, and changing cutoff recomputes selection from the cached versions. Set `DATA_DIR` to durable storage for ephemeral hosts.
+WindLens is a modular monolith with a separate data-ingestion pipeline. The dashboard does not fetch the full Elexon history every time someone opens a page. The ingestion script retrieves and validates the source data, keeps raw JSON for auditing, and writes processed CSVs. Data selection and metric calculations are separate from the FastAPI routes.
 
-FUELHH records are requested by settlement date and WIND fuel type. WINDFOR records are requested by publication-time partitions no longer than seven days; raw records are retained. The analysis creates every expected 30-minute UTC slot, calculates each delivery date's cutoff in Europe/London, then selects the latest publication no later than that cutoff. The chosen forecast joins actual generation by normalized UTC `startTime`.
+The API loads processed CSVs into a small in-process cache keyed by file modification time. Re-ingestion invalidates the cache. Changing the forecast cutoff recalculates selection from the cached versions. On hosts with ephemeral storage, set `DATA_DIR` to durable storage if files need to survive a fresh deployment.
 
-The default 10:00 cutoff is explicitly an assumption. A stable lexical JSON tie break resolves conflicting same-time duplicates and quality counts retain evidence of those conflicts. Metric functions return null for empty samples and zero-denominator WAPE.
+FUELHH requests use settlement dates and the WIND fuel type. WINDFOR requests use publication-time windows no longer than seven days, and the returned raw records are retained. The analysis creates each expected half-hour UTC interval, calculates a cutoff in Europe/London for each delivery date, and selects the latest forecast published on or before that cutoff. It joins the selected forecast to actual generation by normalized UTC `startTime`.
 
+The default 10:00 day-ahead cutoff is an assumption. When conflicting rows share an interval and publication time, a stable sorted-JSON rule selects one; quality counts preserve evidence of the conflict. Metric functions return null when there are no samples or WAPE's denominator is zero.
