@@ -1,21 +1,37 @@
-﻿# Architecture
+# Architecture
 
 ```mermaid
 flowchart LR
- E[Elexon BMRS API<br/>FUELHH + WINDFOR] --> I[Bounded ingestion script]
- I --> R[Raw JSON archive]
- I --> P[Validated processed CSVs]
- P --> S[FastAPI analytics and export API]
+ E[Elexon BMRS API<br/>FUELHH + WINDFOR] --> I[Ingestion script]
+ I --> R[Raw JSON files]
+ I --> P[Processed CSV files]
+ P --> S[FastAPI analytics and exports]
  S --> Q[TanStack Query]
- Q --> U[React + Recharts WindLens]
+ Q --> U[React and Recharts UI]
 ```
 
-WindLens is a modular monolith with a separate data-ingestion pipeline. The dashboard does not fetch the full Elexon history every time someone opens a page. The ingestion script retrieves and validates the source data, keeps raw JSON for auditing, and writes processed CSVs. Data selection and metric calculations are separate from the FastAPI routes.
+WindLens keeps the web app and data-processing code in one repository. It does not download the full Elexon history whenever someone opens the dashboard. A controlled ingestion script fetches and validates data, saves the original rows, and builds the CSV files used by the API.
 
-The API loads processed CSVs into a small in-process cache keyed by file modification time. Re-ingestion invalidates the cache. Changing the forecast cutoff recalculates selection from the cached versions. On hosts with ephemeral storage, set `DATA_DIR` to durable storage if files need to survive a fresh deployment.
+## Data flow
 
-FUELHH requests use settlement dates and the WIND fuel type. WINDFOR requests use publication-time windows no longer than seven days, and the returned raw records are retained. The analysis creates each expected half-hour UTC interval, calculates a cutoff in Europe/London for each delivery date, and selects the latest forecast published on or before that cutoff. It joins the selected forecast to actual generation by normalized UTC `startTime`.
+The script requests FUELHH records filtered to wind and WINDFOR forecast versions. FUELHH requests use settlement dates; WINDFOR requests use publication-time windows of up to seven days. The ingestion report records the request windows, counts, retrieval time, and warnings.
 
-The default 10:00 day-ahead cutoff is an assumption. Publication timestamps are parsed as timezone-aware instants and converted to UTC before comparison; source spellings remain in raw JSON. When conflicting rows share an interval and publication time, a stable sorted-JSON rule selects one; quality counts preserve evidence of the conflict. Metric functions return null when there are no samples or WAPE's denominator is zero.
+The backend reads the processed CSVs. It caches them in memory using each file's modification time, so a changed file is read again. When a request uses a different cutoff, the backend selects forecast versions again from the cached data.
 
-The checked-in retrieval shows 30-minute actual records and 60-minute forecast delivery starts. The canonical accuracy sample contains the independently expected 744 hourly starts. It averages the two half-hour FUELHH MW values within each hour, and leaves an hourly actual missing if either source interval is absent. At the default cutoff, the cache has 1,488/1,488 actual records, 744/744 eligible hourly forecast starts, and 744/744 matched hourly pairs. The interval explorer uses hourly pairs; the actuals CSV preserves the half-hour records. The publication search begins 14 days before delivery; this boundary is not proof of complete historical publication history.
+The frontend is a React app. TanStack Query fetches data from the FastAPI service, and Recharts displays the time series and accuracy results. Docker Compose runs the frontend and backend together for local development.
+
+## Forecast and actual matching
+
+WINDFOR delivery starts in the committed data are hourly. FUELHH actuals have half-hour starts. WindLens creates the expected hourly starts, calculates the cutoff at the configured time on the preceding day in `Europe/London`, and selects the latest version with `publishTime` at or before that cutoff. Timestamps are compared as timezone-aware UTC instants, and records are joined by delivery `startTime`.
+
+For each hour, actual generation is the mean MW of the two FUELHH readings that start in that hour. If either reading is missing, that hourly actual stays unavailable. WindLens does not copy an hourly forecast into half-hour periods or interpolate missing data.
+
+The default cutoff is 10:00 Europe/London. It is an analytical setting, not a confirmed procurement deadline. If conflicting rows share a delivery start and publication time, ingestion applies a stable rule and records the conflict in the quality report. Metrics are unavailable when there are no valid matched pairs; WAPE is also unavailable when total actual generation is zero.
+
+## Coverage and cache
+
+The January analysis has 744 expected hourly forecast starts and 1,488 expected half-hour actual intervals. Forecast availability and matched coverage use the hourly denominator. Actual coverage uses the half-hour denominator. The committed cache has 744 eligible forecasts and matched pairs at the default cutoff.
+
+The forecast publication search starts 14 days before January. It covers the publication times observed in the cache, but this does not establish that the archive has no older versions. See [known limitations](known-limitations.md) for the current retrieval boundary and deployment status.
+
+The Docker image includes the data files. On a host with temporary storage, file changes made at runtime may not survive a redeploy. Configure persistent storage if runtime ingestion needs to persist between deployments.
