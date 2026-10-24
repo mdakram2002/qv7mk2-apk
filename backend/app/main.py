@@ -1,8 +1,7 @@
-from datetime import date
+from datetime import date, datetime
 import io
 import json
 import os
-from pathlib import Path
 from typing import Literal
 
 import pandas as pd
@@ -50,13 +49,22 @@ def selected(start_date: date, end_date: date, cutoff_time: str):
 
 @app.get(PREFIX + "/health", response_model=HealthResponse)
 def health():
-    ready = (DATA / "actual_wind_january_2026.csv").exists() and (DATA / "wind_forecast_versions_january_2026.csv").exists()
+    try:
+        actual = load_csv("actual_wind_january_2026.csv")
+        forecasts = load_csv("wind_forecast_versions_january_2026.csv")
+        matched = load_csv("matched_wind_january_2026.csv")
+        report_path = DATA.parent / "metadata" / "ingestion_report.json"
+        report_ok = json.loads(report_path.read_text(encoding="utf-8")).get("status") == "success"
+    except (OSError, ValueError, pd.errors.ParserError):
+        report_ok = False
+        actual = forecasts = matched = pd.DataFrame()
+    ready = not actual.empty and not forecasts.empty and not matched.empty and report_ok
     return {"status": "ok", "version": app.version, "ready": ready}
 
 
 @app.get(PREFIX + "/metadata")
 def metadata():
-    report = Path("data/metadata/ingestion_report.json")
+    report = DATA.parent / "metadata" / "ingestion_report.json"
     return {"period": {"start": "2026-01-01", "end_exclusive": "2026-02-01"}, "timezone": "Europe/London", "cutoff_default": DEFAULT_CUTOFF, "sources": ["FUELHH", "WINDFOR"], "schema": {"time_fields": ["startTime", "publishTime"], "generation_field": "generation_mw", "generation_unit": "MW"}, "ingestion": json.loads(report.read_text()) if report.exists() else {"status": "not_ingested"}}
 
 
@@ -95,7 +103,7 @@ def monthly(cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):
 
 
 @app.get(PREFIX + "/intervals")
-def intervals(start_date: date = date(2026, 1, 1), end_date: date = date(2026, 2, 1), cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$"), page: int = Query(1, ge=1), page_size: int = Query(48, ge=1, le=500), quality_status: str | None = None, sort_by: Literal["startTime", "forecast_generation_mw", "actual_generation_mw", "signed_error_mw", "absolute_error_mw", "selected_publishTime"] = "startTime", sort_order: Literal["asc", "desc"] = "asc"):
+def intervals(start_date: date = date(2026, 1, 1), end_date: date = date(2026, 2, 1), cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$"), page: int = Query(1, ge=1), page_size: int = Query(48, ge=1, le=500), quality_status: Literal["matched", "missing_forecast", "missing_actual"] | None = None, sort_by: Literal["startTime", "forecast_generation_mw", "actual_generation_mw", "signed_error_mw", "absolute_error_mw", "selected_publishTime"] = "startTime", sort_order: Literal["asc", "desc"] = "asc"):
     df = selected(start_date, end_date, cutoff_time)
     if quality_status:
         df = df[df.data_quality_status == quality_status]
@@ -105,32 +113,48 @@ def intervals(start_date: date = date(2026, 1, 1), end_date: date = date(2026, 2
 
 
 @app.get(PREFIX + "/forecast-versions")
-def forecast_versions(start_time: str, cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")):
+def forecast_versions(start_time: datetime, cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")):
+    if start_time.tzinfo is None:
+        from fastapi import HTTPException
+        raise HTTPException(422, "start_time must include a timezone")
+    start = pd.Timestamp(start_time).tz_convert("UTC")
+
+    if start < pd.Timestamp("2026-01-01", tz="UTC") or start >= pd.Timestamp("2026-02-01", tz="UTC"):
+        from fastapi import HTTPException
+        raise HTTPException(422, "start_time must fall within January 2026")
     forecasts = load_csv("wind_forecast_versions_january_2026.csv")
+
     if forecasts.empty:
-        return {"versions": [], "status": "not_ingested"}
+        return {"startTime": start.isoformat(), "decision_cutoff": cutoff_for(start.tz_convert(LONDON).date(), cutoff_time).isoformat(), "eligible_version_count": 0, "selection_status": "missing_eligible_forecast", "versions": [], "status": "not_ingested"}
     forecasts["startTime"] = pd.to_datetime(forecasts.startTime, utc=True)
-    group = forecasts[forecasts.startTime == pd.Timestamp(start_time)]
-    delivery = pd.Timestamp(start_time).tz_convert(LONDON).date()
+    group = forecasts[forecasts.startTime == start]
+    delivery = start.tz_convert(LONDON).date()
     cutoff = cutoff_for(delivery, cutoff_time)
     version_rows = group.to_dict("records")
-    chosen, _ = select_versions(version_rows, cutoff)
+    chosen, eligible_versions = select_versions(version_rows, cutoff)
     actuals = load_csv("actual_wind_january_2026.csv")
     actuals["startTime"] = pd.to_datetime(actuals.startTime, utc=True) if not actuals.empty else pd.Series(dtype="datetime64[ns, UTC]")
-    actual = actuals[actuals.startTime == pd.Timestamp(start_time)].generation_mw.iloc[0] if not actuals.empty and (actuals.startTime == pd.Timestamp(start_time)).any() else None
+    actual = actuals[actuals.startTime == start].generation_mw.iloc[0] if not actuals.empty and (actuals.startTime == start).any() else None
     versions = []
-    for row in sorted(version_rows, key=lambda item: (item["publishTime"], item["generation_mw"])):
-        eligible = pd.Timestamp(row["publishTime"]).to_pydatetime() <= cutoff
+
+    for row in sorted(version_rows, key=lambda item: (pd.Timestamp(item["publishTime"]).tz_convert("UTC"), json.dumps(item, sort_keys=True, default=str))):
+        eligible = pd.Timestamp(row["publishTime"]).tz_convert("UTC").to_pydatetime() <= cutoff
         is_selected = bool(chosen and row["publishTime"] == chosen["publishTime"] and row["generation_mw"] == chosen["generation_mw"])
-        versions.append({**row, "eligible": eligible, "selected": is_selected, "actual_generation_mw": actual, "reason": "selected latest eligible" if is_selected else "eligible, superseded by a later eligible version" if eligible else "published after decision cutoff"})
-    return {"decision_cutoff": cutoff.isoformat(), "versions": versions}
+        versions.append({**row, "startTime": start.isoformat(), "eligible": eligible, "selected": is_selected, "actual_generation_mw": actual, "reason": "selected latest eligible" if is_selected else "eligible, superseded by a later eligible version" if eligible else "published after decision cutoff"})
+    return {"startTime": start.isoformat(), "decision_cutoff": cutoff.isoformat(), "eligible_version_count": len(eligible_versions), "selection_status": "selected_latest_eligible" if chosen else "missing_eligible_forecast", "versions": versions}
 
 
 @app.get(PREFIX + "/data-quality")
-def quality():
-    p = Path("data/metadata/ingestion_report.json")
+def quality(cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")):
+    p = DATA.parent / "metadata" / "ingestion_report.json"
     report = json.loads(p.read_text()) if p.exists() else {"status": "not_ingested", "sources": ["FUELHH", "WINDFOR"]}
-    return {**report, "cache_status": "processed CSV cache; invalidated by file modification time"}
+    matched = load_matched(cutoff_time)
+    counts = matched.data_quality_status.value_counts().to_dict() if not matched.empty else {}
+    eligible_starts = int(matched.loc[matched.eligible_forecast_versions > 0, "startTime"].nunique()) if not matched.empty else 0
+    matched_count = int(counts.get("matched", 0))
+    expected_count = len(matched)
+    quality_counts = report.get("quality", {})
+    return {**report, "cutoff_time": cutoff_time, "expected_actual_intervals": expected_count, "actual_records_observed": int(matched.actual_generation_mw.notna().sum()) if not matched.empty else 0, "eligible_forecast_delivery_intervals": eligible_starts, "matched_intervals_at_cutoff": matched_count, "coverage_percent_at_cutoff": matched_count / expected_count * 100 if expected_count else None, "missing_forecasts_at_cutoff": int(counts.get("missing_forecast", 0)), "missing_actuals": int(counts.get("missing_actual", 0)), "invalid_source_records": int(quality_counts.get("invalid_records", 0)), "cache_status": "processed CSV cache; invalidated by file modification time"}
 
 
 def csv_download(filename: str, data: pd.DataFrame):
@@ -146,10 +170,14 @@ def export_actuals(): return csv_download("actuals.csv", load_csv("actual_wind_j
 @app.get(PREFIX + "/export/forecasts.csv")
 def export_forecasts(): return csv_download("forecasts.csv", load_csv("wind_forecast_versions_january_2026.csv"))
 @app.get(PREFIX + "/export/matched.csv")
-def export_matched(cutoff_time: str = DEFAULT_CUTOFF): return csv_download("matched.csv", load_matched(cutoff_time))
+def export_matched(start_date: date = date(2026, 1, 1), end_date: date = date(2026, 2, 1), cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$"), quality_status: Literal["matched", "missing_forecast", "missing_actual"] | None = None):
+    df = selected(start_date, end_date, cutoff_time)
+    if quality_status:
+        df = df[df.data_quality_status == quality_status]
+    return csv_download("matched.csv", df)
 @app.get(PREFIX + "/export/daily-accuracy.csv")
 def export_daily(cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")): return csv_download("daily-accuracy.csv", pd.DataFrame(daily(cutoff_time)))
 @app.get(PREFIX + "/export/ingestion-report.json")
-def export_report():
-    path = Path("data/metadata/ingestion_report.json")
-    return StreamingResponse(iter([path.read_text() if path.exists() else "{}"]), media_type="application/json", headers={"Content-Disposition": 'attachment; filename="ingestion-report.json"'})
+def export_report(cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")):
+    report = json.dumps(quality(cutoff_time), indent=2)
+    return StreamingResponse(iter([report]), media_type="application/json", headers={"Content-Disposition": 'attachment; filename="ingestion-report.json"'})

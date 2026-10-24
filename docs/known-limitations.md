@@ -1,10 +1,11 @@
 # Known limitations
 
-- Historical analysis depends on retrieving the relevant WINDFOR publication versions. If ingestion fails, affected values remain unavailable.
-- WINDFOR history is requested in publication-time windows of no more than seven days. The January retrieval starts 14 days before delivery as a coverage assumption; check Elexon's current horizon documentation if requirements change.
-- Retrieved forecasts have hourly delivery starts, while FUELHH actuals are half-hourly. WindLens does not interpolate or duplicate forecasts, so January has forecasts for 744 of 1,488 intervals (50% coverage).
-- Live API checks confirmed that FUELHH history is available through its dataset endpoint, while its filtered stream returned current data. A multi-week WINDFOR request failed with HTTP 400, so neither stream nor long date ranges are used for historical backfill.
-- The default 10:00 Europe/London day-ahead cutoff is an analytical choice, not a confirmed procurement gate or contractual deadline.
-- The API loads January CSVs into memory. It is suitable for this small analysis, but has not been designed for heavy concurrent use.
-- There was no public deployment, service credentials, or public URL available when this was written. The deployment templates still need to be configured and published by an account owner.
-- Vercel embeds the backend URL when it builds the frontend. Set `VITE_API_URL` before building and configure backend CORS to allow the deployed frontend origin.
+- Forecast publication searches in the committed retrieval begin on 18 December 2025, 14 days before the delivery month. The available files do not prove that every forecast version published earlier was retrieved. Historical scores are therefore bounded by that retrieval assumption.
+- The retrieved January WINDFOR rows have 744 unique hourly delivery starts. FUELHH has 1,488 half-hour actual intervals. At the default cutoff, only the hourly starts match; WindLens does not interpolate or copy forecasts into the intervening intervals. Coverage is 744/1,488, or 50%.
+- The 10:00 Europe/London day-ahead cutoff is configurable and clearly treated as an analytical assumption. It has not been verified as a procurement gate or contractual deadline.
+- The ingestion script partitions WINDFOR publication-time requests and preserves the raw returned records. The current checked-in report records request windows and retrieval counts, but a new live ingestion was not possible during this audit. Recheck current endpoint behavior and history boundaries when refreshing the dataset.
+- The API loads processed CSVs into memory. It is designed for this small January analysis, not high-concurrency operational use.
+- The dataset is copied into the backend Docker image. Files written to Render's default ephemeral filesystem do not survive a redeploy; use a supported persistent disk if ingestion writes need to persist.
+- The public URLs were provided by the project owner, but outbound network access from this environment refused the connection. Current frontend availability, backend health, CORS behavior, exports, and logged-out access remain unverified.
+- The repository is publicly named `qv7mk2-apk`, but its GitHub owner handle is personal and visible. The repository name looks random; ownership is not anonymous.
+- No unlisted demo video has been recorded or uploaded. See [video script and recording checklist](video-script.md).

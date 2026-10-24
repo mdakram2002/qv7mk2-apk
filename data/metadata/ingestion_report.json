@@ -8,7 +8,7 @@
   "cutoff_default": "10:00",
   "cutoff_timezone": "Europe/London",
   "forecast_publish_search_start": "2025-12-18T00:00:00Z",
-  "forecast_search_start_assumption": "14 days before delivery; includes available pre-delivery issue history",
+  "forecast_search_start_assumption": "14-day publication lookback; completeness before the search boundary has not been established",
   "request_counts": [
     {
       "dataset": "FUELHH",
@@ -103,5 +103,28 @@
   "missing_forecasts": 744,
   "matched_intervals": 744,
   "coverage_percent": 50.0,
-  "forecast_resolution_note": "Retrieved WINDFOR records cover hourly delivery starts; alternate half-hour starts have no forecast row and are left missing."
+  "forecast_resolution_note": "Retrieved WINDFOR records cover hourly delivery starts; alternate half-hour starts have no forecast row and are left missing.",
+  "sources": {
+    "actuals": {
+      "endpoint": "https://data.elexon.co.uk/bmrs/api/v1/datasets/FUELHH",
+      "filters": {
+        "fuelType": "WIND",
+        "settlementDateFrom": "2026-01-01",
+        "settlementDateTo": "2026-01-31"
+      }
+    },
+    "forecasts": {
+      "endpoint": "https://data.elexon.co.uk/bmrs/api/v1/datasets/WINDFOR",
+      "filters": {
+        "publishDateTimeFrom": "2025-12-18T00:00:00Z",
+        "publishDateTimeTo": "2026-02-01T00:00:00Z"
+      }
+    }
+  },
+  "actual_resolution_minutes_observed": 30,
+  "forecast_resolution_minutes_observed": 60,
+  "coverage_denominator": "expected half-hour delivery intervals (1,488)",
+  "warnings": [
+    "Forecast publication search began 14 days before delivery. Completeness of versions published before that boundary has not been established."
+  ]
 }

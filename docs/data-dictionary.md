@@ -14,6 +14,9 @@ Exports use ISO 8601 UTC timestamps. The interface displays times in Europe/Lond
 | `absolute_error_mw`, `squared_error_mw` | Absolute and squared signed error |
 | `percentage_error` | Signed error divided by actual generation, multiplied by 100; null when actual generation is zero |
 | `forecast_available_at_cutoff` | Whether an eligible forecast version exists |
+| `eligible_forecast_versions` | Number of retrieved versions published at or before the selected cutoff |
+| `selection_status` | `selected_latest_eligible` or `missing_eligible_forecast` |
+| `selection_reason` | Short explanation of why a version was selected or why none was eligible |
 | `data_quality_status` | `matched`, `missing_forecast`, or `missing_actual` |
 
 Null means a value is unavailable or does not apply. Zero is a valid generation value. Raw API responses are stored separately from the processed rows.

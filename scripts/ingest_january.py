@@ -25,7 +25,12 @@ async def fetch(client: httpx.AsyncClient, dataset: str, params: dict) -> list[d
             response = await client.get(url, params=params, headers={"Accept": "application/json"})
             response.raise_for_status()
             payload = response.json()
-            return payload.get("data", payload) if isinstance(payload, dict) else payload
+            rows = payload.get("data", payload) if isinstance(payload, dict) else payload
+            if not isinstance(rows, list):
+                raise ValueError(f"Unexpected {dataset} response shape")
+            if isinstance(payload, dict) and any(key in payload for key in ("next", "nextPage", "nextPageToken", "continuationToken")):
+                raise ValueError(f"{dataset} response indicates pagination that this ingester does not implement")
+            return rows
         except (httpx.HTTPError, ValueError):
             if attempt == 4:
                 raise
@@ -112,7 +117,7 @@ async def run():
         chosen = group.sort_values(["publishTime", "generation_mw"], kind="stable").iloc[-1] if not group.empty else None
         fval = float(chosen.generation_mw) if chosen is not None else None
         err = fval - float(actual_val) if fval is not None and actual_val is not None else None
-        matched.append({"startTime": start.isoformat(), "decision_cutoff": cutoff.isoformat(), "selected_publishTime": chosen.publishTime if chosen is not None else None, "forecast_generation_mw": fval, "actual_generation_mw": float(actual_val) if actual_val is not None else None, "signed_error_mw": err, "absolute_error_mw": abs(err) if err is not None else None, "squared_error_mw": err**2 if err is not None else None, "percentage_error": err / float(actual_val) * 100 if err is not None and actual_val else None, "forecast_available_at_cutoff": chosen is not None, "data_quality_status": "matched" if err is not None else "missing_forecast" if actual_val is not None else "missing_actual"})
+        matched.append({"startTime": start.isoformat(), "decision_cutoff": cutoff.isoformat(), "eligible_forecast_versions": len(group), "selection_status": "selected_latest_eligible" if chosen is not None else "missing_eligible_forecast", "selection_reason": "latest retrieved version published by the decision cutoff" if chosen is not None else "no retrieved forecast was published by the decision cutoff", "selected_publishTime": chosen.publishTime if chosen is not None else None, "forecast_generation_mw": fval, "actual_generation_mw": float(actual_val) if actual_val is not None else None, "signed_error_mw": err, "absolute_error_mw": abs(err) if err is not None else None, "squared_error_mw": err**2 if err is not None else None, "percentage_error": err / float(actual_val) * 100 if err is not None and actual_val else None, "forecast_available_at_cutoff": chosen is not None, "data_quality_status": "matched" if err is not None else "missing_forecast" if actual_val is not None else "missing_actual"})
     matched_df = pd.DataFrame(matched)
     matched_df.to_csv(OUT / "matched_wind_january_2026.csv", index=False)
     daily = []
@@ -121,7 +126,40 @@ async def run():
         daily.append({"delivery_date": day, "expected_interval_count": len(group), "matched_interval_count": int(group.data_quality_status.eq("matched").sum()), "coverage_percent": float(group.data_quality_status.eq("matched").mean() * 100), **metrics(group)})
     pd.DataFrame(daily).to_csv(OUT / "daily_wind_accuracy_january_2026.csv", index=False)
     pd.DataFrame([{ "month": "2026-01", "expected_interval_count": len(matched_df), "matched_interval_count": int(matched_df.data_quality_status.eq("matched").sum()), "coverage_percent": float(matched_df.data_quality_status.eq("matched").mean() * 100), **metrics(matched_df)}]).to_csv(OUT / "monthly_wind_accuracy_january_2026.csv", index=False)
-    report = {"status": "success", "retrieved_at": datetime.now(timezone.utc).isoformat(), "period": ["2026-01-01", "2026-02-01"], "cutoff_default": DEFAULT_CUTOFF, "cutoff_timezone": "Europe/London", "forecast_publish_search_start": "2025-12-18T00:00:00Z", "forecast_search_start_assumption": "14 days before delivery; includes available pre-delivery issue history", "request_counts": counts, "raw_actual_records": len(actual), "raw_forecast_records": len(forecasts), "actual_records": len(actual_df), "forecast_versions": len(forecast_df), "forecast_unique_delivery_starts": int(forecast_df.startTime.nunique()), "expected_intervals": len(matched_df), "quality": quality, "missing_actuals": int(matched_df.actual_generation_mw.isna().sum()), "missing_forecasts": int(matched_df.forecast_generation_mw.isna().sum()), "matched_intervals": int(matched_df.data_quality_status.eq("matched").sum()), "coverage_percent": float(matched_df.data_quality_status.eq("matched").mean() * 100), "forecast_resolution_note": "Retrieved WINDFOR records cover hourly delivery starts; alternate half-hour starts have no forecast row and are left missing."}
+    actual_steps = pd.to_datetime(actual_df.startTime, utc=True).drop_duplicates().sort_values().diff().dropna().dt.total_seconds().div(60) if not actual_df.empty else pd.Series(dtype=float)
+    forecast_steps = pd.to_datetime(forecast_df.startTime, utc=True).drop_duplicates().sort_values().diff().dropna().dt.total_seconds().div(60) if not forecast_df.empty else pd.Series(dtype=float)
+    warnings = ["Forecast publication search begins 14 days before the delivery period. Completeness of versions published before that boundary has not been established."]
+    if len(actual_df) != len(matched_df):
+        warnings.append("Retrieved actual record count differs from the expected half-hour interval count.")
+    report = {
+        "status": "success",
+        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "period": ["2026-01-01", "2026-02-01"],
+        "sources": {
+            "actuals": {"endpoint": f"{API}/FUELHH", "filters": {"fuelType": "WIND", "settlementDateFrom": "2026-01-01", "settlementDateTo": "2026-01-31"}},
+            "forecasts": {"endpoint": f"{API}/WINDFOR", "filters": {"publishDateTimeFrom": "2025-12-18T00:00:00Z", "publishDateTimeTo": "2026-02-01T00:00:00Z"}},
+        },
+        "cutoff_default": DEFAULT_CUTOFF,
+        "cutoff_timezone": "Europe/London",
+        "forecast_publish_search_start": "2025-12-18T00:00:00Z",
+        "forecast_search_start_assumption": "14 days before delivery; does not establish completeness before this boundary",
+        "request_counts": counts,
+        "raw_actual_records": len(actual),
+        "raw_forecast_records": len(forecasts),
+        "actual_records": len(actual_df),
+        "forecast_versions": len(forecast_df),
+        "forecast_unique_delivery_starts": int(forecast_df.startTime.nunique()),
+        "actual_resolution_minutes_observed": int(actual_steps.mode().iloc[0]) if not actual_steps.empty else None,
+        "forecast_resolution_minutes_observed": int(forecast_steps.mode().iloc[0]) if not forecast_steps.empty else None,
+        "expected_intervals": len(matched_df),
+        "quality": quality,
+        "missing_actuals": int(matched_df.actual_generation_mw.isna().sum()),
+        "missing_forecasts": int(matched_df.forecast_generation_mw.isna().sum()),
+        "matched_intervals": int(matched_df.data_quality_status.eq("matched").sum()),
+        "coverage_percent": float(matched_df.data_quality_status.eq("matched").mean() * 100),
+        "forecast_resolution_note": "Observed forecast delivery starts are hourly. Alternate half-hour starts have no forecast row and remain missing.",
+        "warnings": warnings,
+    }
     (META / "ingestion_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
 

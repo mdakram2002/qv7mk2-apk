@@ -6,6 +6,6 @@ services:
     healthCheckPath: /api/v1/health
     envVars:
       - key: CORS_ORIGINS
-        value: https://YOUR-VERCEL-DOMAIN.vercel.app
+        value: https://windlens.vercel.app
       - key: DATA_DIR
         value: /app/data/processed

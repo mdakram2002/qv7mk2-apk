@@ -18,8 +18,20 @@ def cutoff_for(delivery_date: date, cutoff_time: str = DEFAULT_CUTOFF) -> dateti
 
 
 def select_versions(versions: list[dict], cutoff: datetime) -> tuple[dict | None, list[dict]]:
-    eligible = [v for v in versions if pd.Timestamp(v["publishTime"]).to_pydatetime().astimezone(timezone.utc) <= cutoff]
-    eligible.sort(key=lambda v: (str(v["publishTime"]), json.dumps(v, sort_keys=True, default=str)))
+    """Return eligible versions ordered by their actual instant, with a stable tie break."""
+    cutoff_utc = pd.Timestamp(cutoff)
+    if cutoff_utc.tzinfo is None:
+        raise ValueError("cutoff must be timezone-aware")
+    cutoff_utc = cutoff_utc.tz_convert("UTC")
+
+    def published_at(row: dict) -> pd.Timestamp:
+        value = pd.Timestamp(row["publishTime"])
+        if value.tzinfo is None:
+            raise ValueError("publishTime must be timezone-aware")
+        return value.tz_convert("UTC")
+
+    eligible = [v for v in versions if published_at(v) <= cutoff_utc]
+    eligible.sort(key=lambda v: (published_at(v), json.dumps(v, sort_keys=True, default=str)))
     return (eligible[-1] if eligible else None), eligible
 
 
@@ -80,7 +92,12 @@ def match_records(actuals: list[dict], forecasts: list[dict], delivery_date: dat
 
 
 def metrics(rows: pd.DataFrame) -> dict:
-    valid = rows.dropna(subset=["actual_generation_mw", "forecast_generation_mw"]) if not rows.empty else rows
+    valid = rows.dropna(subset=["actual_generation_mw", "forecast_generation_mw"]).copy() if not rows.empty else rows
+    if not valid.empty:
+        valid = valid[
+            pd.to_numeric(valid.actual_generation_mw, errors="coerce").map(math.isfinite)
+            & pd.to_numeric(valid.forecast_generation_mw, errors="coerce").map(math.isfinite)
+        ]
     if valid.empty:
         return {"sample_count": 0, "mae_mw": None, "rmse_mw": None, "bias_mw": None, "wape_percent": None}
     errors = valid.forecast_generation_mw - valid.actual_generation_mw
@@ -113,6 +130,9 @@ def load_matched(cutoff_time: str = DEFAULT_CUTOFF) -> pd.DataFrame:
     result["actual_generation_mw"] = actual.generation_mw.reindex(slots)
     result["selected_publishTime"] = None
     result["forecast_generation_mw"] = None
+    result["eligible_forecast_versions"] = 0
+    result["selection_status"] = "missing_eligible_forecast"
+    result["selection_reason"] = "no retrieved forecast was published by the decision cutoff"
     result["decision_cutoff"] = [cutoff_for(t.tz_convert(LONDON).date(), cutoff_time).isoformat() for t in slots]
     if not forecasts.empty:
         forecasts["startTime"] = pd.to_datetime(forecasts.startTime, utc=True)
@@ -121,10 +141,13 @@ def load_matched(cutoff_time: str = DEFAULT_CUTOFF) -> pd.DataFrame:
             if start not in result.index:
                 continue
             cutoff = pd.Timestamp(result.at[start, "decision_cutoff"])
-            chosen, _ = select_versions(group.to_dict("records"), cutoff.to_pydatetime())
+            chosen, eligible = select_versions(group.to_dict("records"), cutoff.to_pydatetime())
+            result.at[start, "eligible_forecast_versions"] = len(eligible)
             if chosen:
                 result.at[start, "selected_publishTime"] = chosen["publishTime"].isoformat()
                 result.at[start, "forecast_generation_mw"] = chosen["generation_mw"]
+                result.at[start, "selection_status"] = "selected_latest_eligible"
+                result.at[start, "selection_reason"] = "latest retrieved version published by the decision cutoff"
     result.index.name = "startTime"
     result = result.reset_index()
     result["signed_error_mw"] = result.forecast_generation_mw - result.actual_generation_mw

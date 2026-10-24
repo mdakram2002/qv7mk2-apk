@@ -1,55 +1,127 @@
 # WindLens
 
-WindLens compares UK national wind generation forecasts with actual wind generation for January 2026. It is a dashboard for analysis, not a trading system. Its measurements come from Elexon's BMRS Insights API. When a value is unavailable, WindLens leaves it blank instead of estimating it.
+WindLens helps a day-ahead electricity procurement team review UK wind-generation forecasts against actual generation. It shows which forecast version was available by a selected decision cutoff and how that forecast performed. It is decision support, not a procurement optimizer or trading system: demand, non-wind generation, prices, and other inputs needed to calculate a purchase requirement are outside this analysis.
 
-## Data status
+## Live links
 
-The January dataset contains 1,488 actual half-hour records and 26,280 WINDFOR source rows. After limiting forecast versions to January delivery times, 18,080 versions remain across 744 hourly delivery starts. Since the forecasts are hourly and actuals are half-hourly, only 744 of the 1,488 intervals have both values (50% coverage). WindLens does not copy or interpolate forecasts into the gaps. This retrieval had no missing actuals, conflicting duplicates, or invalid source rows.
+- Frontend: [windlens.vercel.app](https://windlens.vercel.app/)
+- Backend health: [qv7mk2-apk.onrender.com/api/v1/health](https://qv7mk2-apk.onrender.com/api/v1/health)
+- Interactive API docs: [qv7mk2-apk.onrender.com/docs](https://qv7mk2-apk.onrender.com/docs)
 
-FUELHH returned 48 actual records for January 1 when queried through its dataset endpoint. Its stream endpoint ignored the requested filters and returned current data, so the ingestion process uses the dataset endpoint for history. WINDFOR history must be fetched in publication-time windows of at most seven days; a month-long request returns HTTP 400. For January, ingestion starts publication searches 14 days before the delivery period. That two-week horizon is an assumption documented in [the architecture notes](docs/architecture.md) and [known limitations](docs/known-limitations.md).
+These URLs were supplied for the project. Public checks from the current development environment could not connect to the hosts, so their present availability and the frontend-to-backend integration are not independently verified here. The Git remote is `mdakram2002/qv7mk2-apk`; its repository name is random-looking, but the owner name is identifiable. Do not describe the repository ownership as anonymous.
+
+## What it does
+
+- Compares January 2026 FUELHH actual generation with WINDFOR forecast versions.
+- Replays forecast availability using a configurable cutoff, defaulting to 10:00 Europe/London on the preceding delivery date. This is an analytical assumption, not a verified market deadline.
+- Shows summary and daily accuracy, interval records, forecast publication history, data-quality counts, and CSV/JSON exports.
+- Leaves forecasts and metrics unavailable when the source has no eligible value. It does not duplicate hourly forecasts into half-hour slots or interpolate them.
+
+There are no screenshots checked into this repository yet. The UI's main chart samples every other half-hour actual record, giving hourly chart points to match the observed hourly forecast cadence. Interval exports and the explorer retain the half-hour records.
+
+## Data and current results
+
+The analysis uses the official Elexon BMRS Insights datasets only:
+
+- [FUELHH](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/FUELHH/stream) for actual generation, requested with `fuelType=WIND`.
+- [WINDFOR](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/WINDFOR/stream) for forecast versions, retaining each `startTime`, `publishTime`, and `generation` in the raw records.
+- [Elexon developer portal](https://developer.data.elexon.co.uk/) for API conventions and endpoint documentation.
+
+The committed retrieval contains 1,488 FUELHH half-hour records and 26,280 raw WINDFOR rows. Of the WINDFOR rows, 18,080 have January delivery starts, across 744 unique hourly starts. The matched dataset contains 744 of 1,488 expected half-hours (50% coverage); the intervening half-hours have no forecast record and remain missing. These interval counts and resolution were checked from the committed raw and processed files. The retrieval used a publication search beginning 14 days before January; the files alone do not prove that every potentially relevant version before that boundary was available or retrieved.
+
+Recalculation from the committed matched CSV at the default 10:00 cutoff produces MAE **2,107.18 MW**, RMSE **2,611.24 MW**, mean bias **+1,839.92 MW**, and WAPE **18.19%** over 744 matched intervals. Positive bias means forecasts were higher than actual generation on average. Coverage uses all 1,488 expected half-hour slots as its denominator. These values describe this retrieved sample and its assumed publication-history boundary.
+
+## Method
+
+For each delivery interval, WindLens calculates 10:00 Europe/London on the preceding calendar day, converts that cutoff to UTC, and selects the latest forecast with `publishTime <= cutoff`. It matches using the normalized UTC delivery `startTime`. Publication timestamps are compared as timezone-aware instants; the source timestamp text remains in raw JSON.
+
+Error is `forecast_mw - actual_mw`. MAE is the mean absolute error, RMSE is the square root of mean squared error, bias is mean signed error, and WAPE is total absolute error divided by total actual generation times 100. These scores use the same records with both finite actual and forecast values. WAPE is null if its denominator is zero. Coverage is matched intervals divided by expected half-hour intervals times 100.
+
+## Data layout
+
+- `data/raw/`: retrieved FUELHH and WINDFOR source rows.
+- `data/processed/`: normalized actuals, forecast versions, cutoff-matched intervals, and daily/monthly accuracy CSVs.
+- `data/metadata/ingestion_report.json`: request windows, counts, retrieval time, and quality summary.
+- `backend/app/`: FastAPI endpoints and analysis functions.
+- `backend/tests/`: metric, cutoff, quality, and API tests.
+- `frontend/src/`: React application and UI tests.
+- `scripts/`: controlled ingestion and API inspection scripts.
+- `docs/`: API, architecture, field definitions, limitations, and submission evidence.
+- `render.yaml`, `vercel.json`, `docker-compose.yml`: deployment and local container configuration.
 
 ## Run locally
 
-With Docker:
+Use Python 3.12 and Node 20 or later.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r backend/requirements.lock
+python -m uvicorn app.main:app --app-dir backend --reload
+```
+
+In a second terminal:
+
+```powershell
+npm ci --prefix frontend
+npm run dev --prefix frontend
+```
+
+The Vite development server proxies `/api` to `http://127.0.0.1:8000`.
+
+### Docker Compose
 
 ```powershell
 docker compose up --build
 ```
 
-The frontend is at http://localhost:8080, the API at http://localhost:8000, and the health endpoint at http://localhost:8000/api/v1/health.
-
-To run without Docker, use Python 3.12 and Node 20 or later. Create a Python virtual environment, install `backend/requirements.lock`, then run `python -m uvicorn app.main:app --app-dir backend --reload`. In a second terminal, run `npm ci --prefix frontend` and `npm run dev --prefix frontend`. During development, Vite sends `/api` requests to the local backend.
+The dashboard is at `http://localhost:8080`; the API is at `http://localhost:8000`; health is at `http://localhost:8000/api/v1/health`.
 
 ## Refresh the data
 
-Install the backend dependencies, then run `python scripts/ingest_january.py`. The script needs live API access. It retries bounded requests, divides publication dates into supported windows, and saves the source responses alongside processed files. The dashboard reads the processed files. See [data/README.md](data/README.md) for details.
+The controlled ingestion script makes public Elexon API requests and writes raw and processed files:
 
-## Forecast selection and metrics
+```powershell
+python scripts/ingest_january.py
+```
 
-WindLens defaults to a decision cutoff of **10:00 Europe/London on the day before delivery**. This is an analytical assumption, not a confirmed procurement deadline. For each delivery interval, it selects the latest forecast published at or before the cutoff.
-
-Exact duplicates are collapsed. If rows for the same interval and publication time disagree, WindLens picks one deterministically by sorting the source-row JSON and flags the conflict. Times are stored in UTC and shown in Europe/London in the interface.
-
-Forecast error is forecast minus actual, so positive bias means over-forecasting. MAE, RMSE, and bias are measured in MW. WAPE is the total absolute error divided by total actual generation, expressed as a percentage; it is unavailable when total actual generation is zero. Monthly scores are calculated from interval records rather than by averaging daily scores.
-
-## API and data
-
-The versioned API is documented at `/docs`. It includes health and metadata, summaries, time series, daily and monthly accuracy, paginated intervals, forecast versions, data-quality statistics, and CSV or JSON exports.
-
-The data comes from [Elexon's FUELHH endpoint](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/FUELHH/stream) and [WINDFOR endpoint](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/WINDFOR/stream). The [Elexon developer portal](https://developer.data.elexon.co.uk/) documents the wider API. The API base URL is `https://data.elexon.co.uk/bmrs/api/v1`.
-
-Generation values are in MW. `startTime` is the start of a delivery interval; `publishTime` is when a forecast version was published. Exported timestamps use ISO 8601 UTC. Missing values remain null, and actual generation is filtered to `fuelType=WIND`.
+No API key is stored in this repository. The current script partitions WINDFOR publication-time requests and records request windows. Its 14-day lookback is an assumption. It does not establish completeness of publication history before its search boundary. See [data/README.md](data/README.md) and [known limitations](docs/known-limitations.md) before interpreting a replay as a complete historical archive.
 
 ## Configuration and deployment
 
-Copy `.env.example` to `.env`. Set `VITE_API_URL` when building the frontend and `CORS_ORIGINS` for the backend. Deployment settings are in `render.yaml`, `vercel.json`, and the GitHub Actions workflow.
+Copy `.env.example` to `.env` for local configuration. `DATA_DIR` points to processed CSVs, `DEFAULT_CUTOFF` sets the default clock time, `CORS_ORIGINS` lists allowed browser origins, and `VITE_API_URL` is compiled into the frontend.
 
-There is no public WindLens repository or deployment yet. The project is inside an existing checkout, and no service credentials or public URLs were provided.
+The deployment setup is split across two services:
 
-To publish it, create a public GitHub repository for this project and push this directory, not its parent checkout. In Render, create a Docker web service using `backend/Dockerfile` from the repository root. Set `CORS_ORIGINS` to the Vercel site origin and keep `DATA_DIR=/app/data/processed`. The current January files are copied into the image. If the service uses ephemeral storage and you re-ingest data, run ingestion after each fresh deployment; alternatively, attach persistent storage and point `DATA_DIR` to it.
+1. Render hosts the FastAPI backend as a Docker web service from `backend/Dockerfile`. The root `render.yaml` Blueprint sets the Dockerfile, health route, data path, and the Vercel CORS origin. The dataset is copied into the image, so re-ingested files need a new image deployment unless persistent storage is configured.
+2. Vercel hosts the Vite frontend with project root `frontend`. `vercel.json` uses `npm ci`, `npm run build`, and `dist`, which are commands relative to that root. Set `VITE_API_URL` to the Render service origin, with no `/api/v1` suffix.
 
-In Vercel, import the same repository with its root as the project root. The included `vercel.json` builds `frontend/`; set `VITE_API_URL` to the Render service URL. After deploying, add the assigned Vercel origin to Render's `CORS_ORIGINS` and redeploy. Then check the health and summary endpoints, charts, CSV exports, and logged-out access. Add the resulting public URLs here after verifying them.
+For a manually created native Python service on Render, use build command `pip install -r backend/requirements.lock`, root directory blank, and start command `python -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port $PORT`. The Docker Blueprint is the recommended path. After creating the Vercel deployment, configure Render's `CORS_ORIGINS` to the exact Vercel origin.
 
-## Project checks
+## Checks
 
-Run backend checks with `pytest backend/tests`. Frontend checks are `npm test --prefix frontend`, `npm run lint --prefix frontend`, `npm run typecheck --prefix frontend`, and `npm run build --prefix frontend`. CI runs these checks. Synthetic records are used only in tests.
+```powershell
+.\.venv\Scripts\python.exe -m pytest backend/tests -q
+npm test --prefix frontend
+npm run lint --prefix frontend
+npm run typecheck --prefix frontend
+npm run build --prefix frontend
+docker compose config
+docker compose up --build
+```
+
+GitHub Actions runs backend lint/tests and frontend tests, lint, type checking, and build. Both Docker images were built locally, Compose services became healthy, and the local API returned the expected January summary. The public deployment checks are still outstanding.
+
+## AI disclosure and submission status
+
+OpenAI Codex assisted with implementation, documentation, and test updates. The project maintainer is responsible for reviewing the changes and submitted results.
+
+No YouTube video has been recorded or uploaded. A time-coded walkthrough plan and checklist are in [docs/video-script.md](docs/video-script.md). Repository ownership anonymity is also unresolved because the public GitHub owner handle is personal; changing ownership requires the account owner's action.
+
+## Further documentation
+
+- [API reference](docs/api-reference.md)
+- [Architecture](docs/architecture.md)
+- [Data dictionary](docs/data-dictionary.md)
+- [Known limitations](docs/known-limitations.md)
+- [Requirements-to-evidence audit](docs/requirements-evidence.md)

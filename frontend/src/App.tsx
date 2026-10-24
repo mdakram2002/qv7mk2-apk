@@ -52,6 +52,9 @@ type Interval = {
   forecast_generation_mw: number | null;
   selected_publishTime: string | null;
   decision_cutoff: string;
+  eligible_forecast_versions?: number;
+  selection_status?: string;
+  selection_reason?: string;
   signed_error_mw: number | null;
   absolute_error_mw: number | null;
   data_quality_status: string;
@@ -62,6 +65,22 @@ type Daily = {
   mae_mw: number | null;
   bias_mw: number | null;
   coverage_percent?: number;
+};
+type ForecastVersion = {
+  startTime: string;
+  publishTime: string;
+  generation_mw: number;
+  actual_generation_mw: number | null;
+  eligible: boolean;
+  selected: boolean;
+  reason: string;
+};
+type ForecastHistory = {
+  startTime: string;
+  decision_cutoff: string;
+  eligible_version_count: number;
+  selection_status: string;
+  versions: ForecastVersion[];
 };
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(`${API}/api/v1/${path}`);
@@ -90,6 +109,7 @@ export default function App() {
   const setPage = (name: string) => navigate(paths[name] ?? "/");
   const [cutoff, setCutoff] = useState("10:00");
   const [day, setDay] = useState("2026-01-01");
+  const [historyTime, setHistoryTime] = useState("12:00");
   const [filter, setFilter] = useState("all");
   const [tablePage, setTablePage] = useState(1);
   const [sortBy, setSortBy] = useState("startTime");
@@ -119,31 +139,39 @@ export default function App() {
     enabled: page === "Intervals",
   });
   const history = useQuery({
-    queryKey: ["history", day, cutoff],
+    queryKey: ["history", day, historyTime, cutoff],
     queryFn: () =>
-      get<{ versions: Record<string, unknown>[]; decision_cutoff: string }>(
-        `forecast-versions?start_time=${encodeURIComponent(`${day}T12:00:00Z`)}&cutoff_time=${cutoff}`,
+      get<ForecastHistory>(
+        `forecast-versions?start_time=${encodeURIComponent(`${day}T${historyTime}:00Z`)}&cutoff_time=${cutoff}`,
       ),
     enabled: page === "Forecast history",
   });
   const quality = useQuery({
-    queryKey: ["quality"],
-    queryFn: () => get<Record<string, unknown>>("data-quality"),
-    enabled: page === "Data quality",
+    queryKey: ["quality", cutoff],
+    queryFn: () => get<Record<string, unknown>>(`data-quality?cutoff_time=${cutoff}`),
   });
   const rows = series.data ?? [];
   const chartRows = rows
-    .filter((_, i) => i % 6 === 0)
+    .filter((_, i) => i % 2 === 0)
     .map((r) => ({
       ...r,
-      time: new Date(r.startTime).toLocaleTimeString("en-GB", {
+      time: new Date(r.startTime).toLocaleString("en-GB", {
+        day: "2-digit",
+        month: "short",
         hour: "2-digit",
         minute: "2-digit",
         timeZone: "Europe/London",
       }),
     }));
   const s = summary.data;
-  const error = summary.error || series.error;
+  const error = summary.error || series.error || daily.error || quality.error;
+  const retrievedAt = typeof quality.data?.retrieved_at === "string"
+    ? new Date(quality.data.retrieved_at).toLocaleString("en-GB", { timeZone: "Europe/London" })
+    : null;
+  const qualityCount = (key: string) => {
+    const value = quality.data?.[key];
+    return typeof value === "number" ? value : null;
+  };
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -164,6 +192,7 @@ export default function App() {
             <button
               key={label}
               className={`nav-item ${page === label ? "active" : ""}`}
+              aria-current={page === label ? "page" : undefined}
               onClick={() => setPage(label)}
             >
               <Icon size={17} />
@@ -205,9 +234,9 @@ export default function App() {
               <i /> HISTORICAL PERIOD
             </span>
             <span className="period-date">01 — 31 Jan 2026</span>
-            <button className="icon-btn" aria-label="Help">
+            <span className="icon-btn" aria-hidden="true">
               <CircleHelp size={18} />
-            </button>
+            </span>
             <div className="avatar small">AM</div>
           </div>
         </header>
@@ -264,7 +293,7 @@ export default function App() {
                 <div>
                   <b>Cutoff assumption</b>
                   <span>
-                    Forecasts published by <strong>{cutoff} GMT</strong> on the
+                    Forecasts published by <strong>{cutoff} Europe/London</strong> on the
                     day before delivery are included. This is an analytical
                     setting, not a verified market gate.
                   </span>
@@ -279,7 +308,7 @@ export default function App() {
                   value={fmt(s?.mae_mw)}
                   unit="MW"
                   icon={<Activity size={16} />}
-                  note={`${fmt(s?.sample_count)} matched intervals`}
+                  note={`Mean absolute error across ${fmt(s?.sample_count)} matched intervals`}
                   color="mint"
                 />
                 <Metric
@@ -287,7 +316,7 @@ export default function App() {
                   value={fmt(s?.rmse_mw)}
                   unit="MW"
                   icon={<Gauge size={16} />}
-                  note="Lower is more accurate"
+                  note="Square root of mean squared error · MW"
                 />
                 <Metric
                   title="FORECAST BIAS"
@@ -300,11 +329,7 @@ export default function App() {
                       <ArrowDownRight size={16} />
                     )
                   }
-                  note={
-                    (s?.bias_mw ?? 0) >= 0
-                      ? "Net over-forecast"
-                      : "Net under-forecast"
-                  }
+                  note={`Mean signed error · ${(s?.bias_mw ?? 0) >= 0 ? "over-forecast" : "under-forecast"}`}
                   color="purple"
                 />
                 <Metric
@@ -312,7 +337,7 @@ export default function App() {
                   value={fmt(s?.wape_percent, 1)}
                   unit="%"
                   icon={<BarChart3 size={16} />}
-                  note="Weighted absolute percentage error"
+                  note="Total absolute error ÷ total actual · %"
                   color="orange"
                 />
                 <div className="coverage-card">
@@ -343,18 +368,27 @@ export default function App() {
                   </div>
                 </div>
               </div>
+              {s && s.coverage_percent !== null && s.coverage_percent < 100 && (
+                <div className="alert" role="status">
+                  <AlertTriangle size={18} />
+                  <div>
+                    <b>Forecast coverage is incomplete</b>
+                    <span>{fmt(s.matched_intervals)} of {fmt(s.expected_intervals)} expected half-hour intervals have an actual and an eligible forecast ({fmt(s.coverage_percent, 1)}%). Retrieved WINDFOR delivery starts are hourly; missing half-hours are not filled.</span>
+                  </div>
+                </div>
+              )}
               <div className="chart-grid">
                 <section className="panel main-chart">
                   <div className="panel-head">
                     <div>
                       <div className="panel-title">Forecast vs actual</div>
                       <div className="panel-sub">
-                        Half-hourly wind generation <span>·</span> MW
+                        Hourly forecast and actual wind generation <span>·</span> MW
                       </div>
                     </div>
-                    <button className="subtle-button">
+                    <span className="subtle-button">
                       January <ChevronDown size={14} />
-                    </button>
+                    </span>
                   </div>
                   <div className="legend">
                     <span>
@@ -429,7 +463,7 @@ export default function App() {
                     )}
                   </div>
                   <div className="chart-xlabel">
-                    Delivery intervals · Europe/London
+                    Every second half-hour actual interval is shown to align with the hourly forecast cadence · Europe/London
                   </div>
                 </section>
                 <section className="panel error-chart">
@@ -440,7 +474,7 @@ export default function App() {
                         Mean absolute error <span>·</span> MW
                       </div>
                     </div>
-                    <button className="dots">···</button>
+                  <span className="dots" aria-hidden="true">···</span>
                   </div>
                   <div className="chart-area">
                     {daily.data?.length ? (
@@ -563,9 +597,7 @@ export default function App() {
                   </div>
                   <div className="source-updated">
                     <Radio size={13} />
-                    {s
-                      ? "January data loaded"
-                      : "Waiting for verified ingestion"}
+                    {retrievedAt ? `Retrieved ${retrievedAt} Europe/London` : "Ingestion time unavailable"}
                   </div>
                 </section>
               </div>
@@ -617,14 +649,14 @@ export default function App() {
                   <button className="download" onClick={() => setSortOrder((value) => value === "asc" ? "desc" : "asc")} aria-label="Change sort order">{sortOrder === "asc" ? "Ascending ↑" : "Descending ↓"}</button>
                   <a
                     className="download"
-                    href={`${API}/api/v1/export/matched.csv?cutoff_time=${cutoff}`}
+                    href={`${API}/api/v1/export/matched.csv?start_date=${day}&end_date=${nextDay(day)}&cutoff_time=${cutoff}${filter === "all" ? "" : `&quality_status=${filter}`}`}
                   >
                     <Download size={15} /> Export CSV
                   </a>
                 </div>
               </div>
               <div className="table-scroll">
-                <table>
+                <table aria-label="Wind generation interval observations">
                   <thead>
                     <tr>
                       <th>DELIVERY INTERVAL</th>
@@ -632,7 +664,8 @@ export default function App() {
                       <th>ACTUAL · MW</th>
                       <th>SIGNED ERROR</th>
                       <th>ABS. ERROR</th>
-                      <th>PUBLISHED</th>
+                      <th>PUBLISHED AT (UK)</th>
+                      <th>ELIGIBLE VERSIONS</th>
                       <th>DECISION CUTOFF</th>
                       <th>STATUS</th>
                     </tr>
@@ -651,13 +684,12 @@ export default function App() {
                         <td>{fmt(row.absolute_error_mw)}</td>
                         <td>
                           {row.selected_publishTime
-                            ? new Date(
-                                row.selected_publishTime,
-                              ).toLocaleTimeString("en-GB", {
+                            ? new Date(row.selected_publishTime).toLocaleString("en-GB", {
                                 timeZone: "Europe/London",
                               })
                             : "—"}
                         </td>
+                        <td title={row.selection_reason ?? row.selection_status ?? ""}>{row.eligible_forecast_versions ?? 0}</td>
                         <td>{new Date(row.decision_cutoff).toLocaleString("en-GB", { timeZone: "Europe/London" })}</td>
                         <td>
                           <span className={`status ${row.data_quality_status}`}>
@@ -668,7 +700,9 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
-                {!intervalData.data?.items.length && (
+                {intervalData.isLoading && <div role="status" className="empty-state">Loading interval records…</div>}
+                {intervalData.error && <div role="alert" className="alert">Interval records are unavailable: {(intervalData.error as Error).message}</div>}
+                {!intervalData.isLoading && !intervalData.error && !intervalData.data?.items.length && (
                   <Empty text="No interval records are available for this selection." />
                 )}
               </div>
@@ -691,7 +725,7 @@ export default function App() {
                     Forecast publication history
                   </div>
                   <div className="panel-sub">
-                    Every retrieved WINDFOR version for a delivery interval
+                    Retrieved WINDFOR versions for the selected delivery interval
                   </div>
                 </div>
                 <label className="control-label">
@@ -704,17 +738,25 @@ export default function App() {
                     onChange={(e) => setDay(e.target.value)}
                   />
                 </label>
+                <label className="control-label">
+                  DELIVERY START (UK TIME)
+                  <select value={historyTime} onChange={(e) => setHistoryTime(e.target.value)}>
+                    {Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, "0")}:00`).map((time) => <option key={time} value={time}>{time}</option>)}
+                  </select>
+                </label>
               </div>
               <div className="history-callout">
                 <Clock3 size={16} /> Historical selection cutoff:{" "}
                 <b>{cutoff} Europe/London on the prior day</b>. Later
                 publications are excluded from accuracy metrics.
               </div>
-              {history.data?.versions.length ? (
+              {history.isLoading ? <div role="status" className="empty-state">Loading forecast history…</div> : history.error ? <div role="alert" className="alert">Forecast history is unavailable: {(history.error as Error).message}</div> : history.data?.versions.length ? (
                 <div className="table-scroll">
+                  <p className="panel-sub">Delivery start: {new Date(history.data.startTime).toLocaleString("en-GB", { timeZone: "Europe/London" })} Europe/London · {history.data.eligible_version_count} eligible version(s) at cutoff</p>
                   <table>
                     <thead>
                       <tr>
+                        <th>DELIVERY START</th>
                         <th>PUBLISHED AT</th>
                         <th>FORECAST · MW</th>
                         <th>ACTUAL · MW</th>
@@ -725,7 +767,8 @@ export default function App() {
                     <tbody>
                       {history.data.versions.map((row, i) => (
                         <tr key={i}>
-                          <td>{String(row.publishTime)}</td>
+                          <td>{new Date(row.startTime).toLocaleString("en-GB", { timeZone: "Europe/London" })}</td>
+                          <td>{new Date(row.publishTime).toLocaleString("en-GB", { timeZone: "Europe/London" })}</td>
                           <td>{String(row.generation_mw)}</td>
                           <td>{String(row.actual_generation_mw ?? "—")}</td>
                           <td>
@@ -742,60 +785,60 @@ export default function App() {
                   </table>
                 </div>
               ) : (
-                <Empty text="No versions retrieved yet. Historical data will show all publications and cutoff exclusions." />
+                  <Empty text="No WINDFOR versions were retrieved for this delivery start in the current dataset." />
               )}
             </section>
           )}
           {page === "Data quality" && (
             <section className="quality-layout">
+              {quality.error && <div role="alert" className="alert">Data quality report is unavailable: {(quality.error as Error).message}</div>}
+              {quality.isLoading && <div role="status" className="alert">Loading the ingestion and data-quality report…</div>}
               <div className="quality-cards">
                 <div className="panel quality-tile">
-                  <div className="metric-title">RAW ACTUAL RECORDS</div>
-                  <strong>
-                    {fmt(Number(quality.data?.raw_actual_records) || 0)}
-                  </strong>
+                  <div className="metric-title">EXPECTED ACTUAL INTERVALS</div>
+                  <strong>{fmt(qualityCount("expected_actual_intervals"))}</strong>
+                  <small>Half-hour slots in January</small>
+                </div>
+                <div className="panel quality-tile">
+                  <div className="metric-title">ACTUAL RECORDS OBSERVED</div>
+                  <strong>{fmt(qualityCount("actual_records_observed"))}</strong>
                   <small>FUELHH · WIND</small>
                 </div>
                 <div className="panel quality-tile">
                   <div className="metric-title">FORECAST VERSIONS</div>
-                  <strong>
-                    {fmt(Number(quality.data?.forecast_versions) || 0)}
-                  </strong>
-                  <small>WINDFOR publication history</small>
+                  <strong>{fmt(qualityCount("forecast_versions"))}</strong>
+                  <small>WINDFOR versions within delivery month</small>
+                </div>
+                <div className="panel quality-tile">
+                  <div className="metric-title">ELIGIBLE FORECAST STARTS</div>
+                  <strong>{fmt(qualityCount("eligible_forecast_delivery_intervals"))}</strong>
+                  <small>At {cutoff} Europe/London cutoff</small>
+                </div>
+                <div className="panel quality-tile">
+                  <div className="metric-title">MATCHED INTERVALS</div>
+                  <strong>{fmt(qualityCount("matched_intervals_at_cutoff"))}</strong>
+                  <small>Actual and eligible forecast available</small>
                 </div>
                 <div className="panel quality-tile">
                   <div className="metric-title">MISSING FORECASTS</div>
-                  <strong>
-                    {fmt(Number(quality.data?.missing_forecasts) || 0)}
-                  </strong>
-                  <small>At configured cutoff</small>
+                  <strong>{fmt(qualityCount("missing_forecasts_at_cutoff"))}</strong>
+                  <small>Half-hour intervals without an eligible forecast</small>
                 </div>
                 <div className="panel quality-tile">
                   <div className="metric-title">MISSING ACTUALS</div>
-                  <strong>{fmt(Number(quality.data?.missing_actuals) || 0)}</strong>
-                  <small>FUELHH delivery intervals</small>
+                  <strong>{fmt(qualityCount("missing_actuals"))}</strong>
+                  <small>Intervals without FUELHH actuals</small>
                 </div>
                 <div className="panel quality-tile">
-                  <div className="metric-title">DATA ISSUES</div>
-                  <strong>
-                    {fmt(
-                      Number(
-                        (
-                          quality.data?.quality as
-                            | Record<string, number>
-                            | undefined
-                        )?.invalid_records,
-                      ) || 0,
-                    )}
-                  </strong>
+                  <div className="metric-title">INVALID SOURCE RECORDS</div>
+                  <strong>{fmt(qualityCount("invalid_source_records"))}</strong>
                   <small>Invalid source records</small>
                 </div>
               </div>
               <section className="panel quality-details">
                 <div className="panel-title">Ingestion & provenance</div>
                 <p className="panel-sub">
-                  Counts are reported from the latest successful official API
-                  ingestion.
+                  The displayed forecast counts and matches use the selected cutoff. Raw files and retrieval details are available below.
                 </p>
                 <pre>
                   {JSON.stringify(
@@ -806,7 +849,7 @@ export default function App() {
                 </pre>
                 <a
                   className="download"
-                  href={`${API}/api/v1/export/ingestion-report.json`}
+                  href={`${API}/api/v1/export/ingestion-report.json?cutoff_time=${cutoff}`}
                 >
                   <Download size={15} /> Download ingestion report
                 </a>
@@ -870,7 +913,7 @@ function Empty({ text }: { text: string }) {
       <div className="empty-icon">
         <Wind size={20} />
       </div>
-      <b>Verified measurements pending</b>
+      <b>No records available</b>
       <span>{text}</span>
     </div>
   );

@@ -25,6 +25,17 @@ def test_equal_publication_time_is_deterministic_and_timezone_safe():
     assert chosen_a["generation"] == 7
 
 
+def test_selection_compares_absolute_time_not_timestamp_text():
+    cutoff = datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
+    rows = [
+        {"publishTime": "2026-01-01T10:30:00+01:00", "generation": 1},  # 09:30 UTC
+        {"publishTime": "2026-01-01T09:45:00Z", "generation": 2},
+    ]
+    selected, eligible = select_versions(rows, cutoff)
+    assert selected["generation"] == 2
+    assert len(eligible) == 2
+
+
 def test_no_eligible_version():
     selected, _ = select_versions([{"publishTime": "2026-01-01T11:00:00Z"}], datetime(2026, 1, 1, 10, tzinfo=timezone.utc))
     assert selected is None
@@ -61,3 +72,16 @@ def test_metrics_and_zero_denominator():
     assert metrics(pd.DataFrame({"actual_generation_mw": [0], "forecast_generation_mw": [2]}))["wape_percent"] is None
     missing = pd.DataFrame({"actual_generation_mw": [10, None], "forecast_generation_mw": [15, 3]})
     assert metrics(missing)["sample_count"] == 1
+
+
+def test_metrics_match_hand_calculated_four_record_fixture():
+    data = pd.DataFrame({
+        "actual_generation_mw": [100.0, 200.0, 300.0, 400.0],
+        "forecast_generation_mw": [110.0, 180.0, 330.0, 360.0],
+    })
+    result = metrics(data)
+    assert result["sample_count"] == 4
+    assert result["mae_mw"] == 25
+    assert result["rmse_mw"] == (750**0.5)
+    assert result["bias_mw"] == -5
+    assert result["wape_percent"] == 100 / 1000 * 100
