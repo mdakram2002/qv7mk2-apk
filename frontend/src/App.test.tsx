@@ -64,4 +64,38 @@ describe('WindLens dashboard', () => {
     expect(await screen.findByText('Source coverage is incomplete')).toBeTruthy();
     expect(screen.getByText(/Hourly forecast availability is 94.1%/)).toBeTruthy();
   });
+
+  it('keeps half-MW interval values and signed error arithmetically consistent', async () => {
+    window.history.replaceState({}, '', '/intervals');
+    const interval = {
+      startTime: '2026-01-01T00:00:00Z',
+      forecast_generation_mw: 19466,
+      actual_generation_mw: 13814.5,
+      selected_publishTime: '2025-12-31T09:30:00Z',
+      decision_cutoff: '2025-12-31T10:00:00Z',
+      eligible_forecast_versions: 12,
+      selection_status: 'selected_latest_eligible',
+      selection_reason: 'latest retrieved version published by the decision cutoff',
+      signed_error_mw: 5651.5,
+      absolute_error_mw: 5651.5,
+      data_quality_status: 'matched',
+    };
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      const payload = url.includes('/intervals?')
+        ? { items: [interval], total: 1 }
+        : url.includes('/accuracy/daily')
+          ? []
+          : url.includes('/timeseries')
+            ? []
+            : url.includes('/data-quality')
+              ? {}
+              : {};
+      return Promise.resolve({ ok: true, json: async () => payload } as Response);
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<BrowserRouter><QueryClientProvider client={client}><App /></QueryClientProvider></BrowserRouter>);
+    expect(await screen.findByText('13,814.5')).toBeTruthy();
+    expect(screen.getAllByText('5,651.5')).toHaveLength(2);
+  });
 });

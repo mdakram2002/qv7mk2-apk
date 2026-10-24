@@ -689,9 +689,9 @@ export default function App() {
                           })}
                         </td>
                         <td>{fmt(row.forecast_generation_mw)}</td>
-                        <td>{fmt(row.actual_generation_mw)}</td>
-                        <td>{fmt(row.signed_error_mw)}</td>
-                        <td>{fmt(row.absolute_error_mw)}</td>
+                        <td>{fmt(row.actual_generation_mw, 1)}</td>
+                        <td>{fmt(row.signed_error_mw, 1)}</td>
+                        <td>{fmt(row.absolute_error_mw, 1)}</td>
                         <td>
                           {row.selected_publishTime
                             ? new Date(row.selected_publishTime).toLocaleString("en-GB", {
