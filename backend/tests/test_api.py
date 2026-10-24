@@ -1,7 +1,6 @@
 import csv
 import io
 import math
-from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -34,7 +33,12 @@ def test_range_validation_and_metrics_endpoint():
     assert bad.status_code == 422
     response = client.get("/api/v1/summary")
     assert response.status_code == 200
-    assert response.json()["expected_intervals"] == 1488
+    assert response.json()["expected_intervals"] == 744
+    assert response.json()["expected_actual_intervals"] == 1488
+    assert response.json()["actual_records_observed"] == 1488
+    assert response.json()["actual_coverage_percent"] == 100
+    assert response.json()["forecast_availability_percent"] == 100
+    assert response.json()["coverage_percent"] == 100
 
 
 def test_csv_export_headers():
@@ -65,8 +69,8 @@ def test_daily_monthly_and_forecast_history_contracts():
     daily = client.get("/api/v1/accuracy/daily").json()
     monthly = client.get("/api/v1/accuracy/monthly").json()
     assert len(daily) == 31
-    assert daily[0]["expected_interval_count"] == 48
-    assert monthly["expected_interval_count"] == 1488
+    assert daily[0]["expected_interval_count"] == 24
+    assert monthly["expected_interval_count"] == 744
     assert monthly["matched_interval_count"] == 744
     versions = client.get("/api/v1/forecast-versions", params={"start_time": "2026-01-01T00:00:00Z"}).json()
     assert any(version["selected"] for version in versions["versions"])
@@ -104,14 +108,17 @@ def test_quality_and_json_export_report_cutoff_specific_counts():
     assert quality["expected_actual_intervals"] == 1488
     assert quality["matched_intervals_at_cutoff"] == 744
     assert quality["eligible_forecast_delivery_intervals"] == 744
+    assert quality["expected_hourly_delivery_starts"] == 744
+    assert quality["actual_coverage_percent"] == 100
+    assert quality["matched_hourly_coverage_percent"] == 100
     assert report["cutoff_time"] == "10:00"
-    assert report["missing_forecasts_at_cutoff"] == 744
+    assert report["missing_forecasts_at_cutoff"] == 0
 
 
 def test_summary_reconciles_to_independent_matched_csv_calculation():
-    path = Path("data/processed/matched_wind_january_2026.csv")
-    with path.open(newline="", encoding="utf-8") as file:
-        records = [row for row in csv.DictReader(file) if row["data_quality_status"] == "matched"]
+    response_csv = client.get("/api/v1/export/hourly-matched.csv")
+    assert response_csv.status_code == 200
+    records = [row for row in csv.DictReader(io.StringIO(response_csv.text)) if row["data_quality_status"] == "matched"]
     errors = [float(row["forecast_generation_mw"]) - float(row["actual_generation_mw"]) for row in records]
     actual_total = sum(float(row["actual_generation_mw"]) for row in records)
     absolute_total = sum(abs(error) for error in errors)
@@ -123,7 +130,20 @@ def test_summary_reconciles_to_independent_matched_csv_calculation():
         "wape_percent": absolute_total / actual_total * 100,
     }
     response = client.get("/api/v1/summary").json()
-    assert response["expected_intervals"] == 1488
+    assert response["expected_intervals"] == 744
     assert response["matched_intervals"] == 744
     for key, value in expected.items():
         assert math.isclose(response[key], value, rel_tol=1e-10)
+
+
+def test_hourly_export_and_timeseries_have_independent_hourly_denominator():
+    export_rows = list(csv.DictReader(io.StringIO(client.get("/api/v1/export/hourly-matched.csv").text)))
+    series_rows = client.get("/api/v1/timeseries").json()
+    assert len(export_rows) == len(series_rows) == 744
+    assert sum(row["data_quality_status"] == "matched" for row in export_rows) == 744
+    interval = client.get("/api/v1/intervals", params={
+        "start_date": "2026-01-01", "end_date": "2026-01-02", "page_size": 1,
+    }).json()["items"][0]
+    assert interval["startTime"] == export_rows[0]["startTime"]
+    assert float(interval["actual_generation_mw"]) == float(export_rows[0]["actual_generation_mw"])
+    assert float(interval["signed_error_mw"]) == float(export_rows[0]["signed_error_mw"])

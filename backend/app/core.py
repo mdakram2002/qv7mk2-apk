@@ -119,39 +119,80 @@ def _read_csv(path: str, modified_ns: int) -> pd.DataFrame:
 
 
 def load_matched(cutoff_time: str = DEFAULT_CUTOFF) -> pd.DataFrame:
+    """Compatibility alias for the canonical hourly forecast/actual comparison."""
+    return load_hourly_matched(cutoff_time)
+
+
+def load_hourly_matched(cutoff_time: str = DEFAULT_CUTOFF) -> pd.DataFrame:
+    """Build the canonical hourly comparison without filling missing source rows.
+
+    FUELHH values are average MW over half-hour settlement periods. An hourly
+    actual is the arithmetic mean of that hour's two source periods, and is
+    available only when both source records are present.
+    """
     actual = load_csv("actual_wind_january_2026.csv")
     forecasts = load_csv("wind_forecast_versions_january_2026.csv")
-    if actual.empty:
-        return pd.DataFrame()
-    actual["startTime"] = pd.to_datetime(actual.startTime, utc=True)
-    actual = actual.drop_duplicates("startTime").set_index("startTime")
-    slots = pd.date_range("2026-01-01", "2026-02-01", freq="30min", inclusive="left", tz="UTC")
+    slots = pd.date_range("2026-01-01T00:00:00Z", periods=744, freq="h")
     result = pd.DataFrame(index=slots)
-    result["actual_generation_mw"] = actual.generation_mw.reindex(slots)
+    result.index.name = "startTime"
+    result["actual_half_hour_count"] = 0
+    result["actual_generation_mw"] = None
+
+    if not actual.empty:
+        actual["startTime"] = pd.to_datetime(actual.startTime, utc=True)
+        actual["generation_mw"] = pd.to_numeric(actual.generation_mw, errors="coerce")
+        aggregated = aggregate_actuals_hourly(actual, slots)
+        result["actual_half_hour_count"] = aggregated.actual_half_hour_count
+        result["actual_generation_mw"] = aggregated.actual_generation_mw
+
     result["selected_publishTime"] = None
     result["forecast_generation_mw"] = None
     result["eligible_forecast_versions"] = 0
     result["selection_status"] = "missing_eligible_forecast"
     result["selection_reason"] = "no retrieved forecast was published by the decision cutoff"
-    result["decision_cutoff"] = [cutoff_for(t.tz_convert(LONDON).date(), cutoff_time).isoformat() for t in slots]
+    result["decision_cutoff"] = [
+        cutoff_for(start.tz_convert(LONDON).date(), cutoff_time).isoformat()
+        for start in slots
+    ]
     if not forecasts.empty:
         forecasts["startTime"] = pd.to_datetime(forecasts.startTime, utc=True)
         forecasts["publishTime"] = pd.to_datetime(forecasts.publishTime, utc=True)
         for start, group in forecasts.groupby("startTime"):
             if start not in result.index:
                 continue
-            cutoff = pd.Timestamp(result.at[start, "decision_cutoff"])
-            chosen, eligible = select_versions(group.to_dict("records"), cutoff.to_pydatetime())
+            chosen, eligible = select_versions(
+                group.to_dict("records"), pd.Timestamp(result.at[start, "decision_cutoff"]).to_pydatetime()
+            )
             result.at[start, "eligible_forecast_versions"] = len(eligible)
             if chosen:
                 result.at[start, "selected_publishTime"] = chosen["publishTime"].isoformat()
-                result.at[start, "forecast_generation_mw"] = chosen["generation_mw"]
+                result.at[start, "forecast_generation_mw"] = float(chosen["generation_mw"])
                 result.at[start, "selection_status"] = "selected_latest_eligible"
                 result.at[start, "selection_reason"] = "latest retrieved version published by the decision cutoff"
-    result.index.name = "startTime"
+
     result = result.reset_index()
+    result["startTime"] = pd.to_datetime(result.startTime, utc=True).map(lambda value: value.isoformat())
     result["signed_error_mw"] = result.forecast_generation_mw - result.actual_generation_mw
     result["absolute_error_mw"] = result.signed_error_mw.abs()
-    result["data_quality_status"] = result.apply(lambda r: "matched" if pd.notna(r.actual_generation_mw) and pd.notna(r.forecast_generation_mw) else "missing_forecast" if pd.notna(r.actual_generation_mw) else "missing_actual", axis=1)
+    result["data_quality_status"] = result.apply(
+        lambda row: "matched"
+        if pd.notna(row.actual_generation_mw) and pd.notna(row.forecast_generation_mw)
+        else "missing_forecast"
+        if pd.notna(row.actual_generation_mw)
+        else "missing_actual",
+        axis=1,
+    )
     return result
+
+
+def aggregate_actuals_hourly(actual: pd.DataFrame, hourly_starts: pd.DatetimeIndex) -> pd.DataFrame:
+    """Average complete pairs of half-hour actual MW values by UTC hour."""
+    indexed = actual.copy()
+    indexed["startTime"] = pd.to_datetime(indexed.startTime, utc=True)
+    indexed["generation_mw"] = pd.to_numeric(indexed.generation_mw, errors="coerce")
+    indexed["hour_start"] = indexed.startTime.dt.floor("h")
+    grouped = indexed.groupby("hour_start").generation_mw.agg(["count", "mean"]).reindex(hourly_starts)
+    counts = grouped["count"].fillna(0).astype(int)
+    values = grouped["mean"].where(counts == 2)
+    return pd.DataFrame({"actual_half_hour_count": counts, "actual_generation_mw": values}, index=hourly_starts)
 

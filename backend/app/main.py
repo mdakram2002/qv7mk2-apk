@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from app.core import DATA, DEFAULT_CUTOFF, LONDON, cutoff_for, load_csv, load_matched, metrics, select_versions
+from app.core import DATA, DEFAULT_CUTOFF, LONDON, cutoff_for, load_csv, load_hourly_matched, metrics, select_versions
 
 app = FastAPI(title="WindLens API", version="1.0.0", description="UK wind forecast accuracy analytics")
 origins = [x.strip() for x in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:8080").split(",")]
@@ -33,18 +33,34 @@ class SummaryResponse(BaseModel):
     expected_intervals: int
     matched_intervals: int
     coverage_percent: float | None
+    expected_hourly_intervals: int
+    eligible_forecast_intervals: int
+    forecast_availability_percent: float | None
+    hourly_actual_coverage_percent: float | None
+    expected_actual_intervals: int
+    actual_records_observed: int
+    actual_coverage_percent: float | None
+    missing_forecasts: int
+    missing_hourly_actuals: int
     quality_counts: dict[str, int]
 
 
-def selected(start_date: date, end_date: date, cutoff_time: str):
+def validate_range(start_date: date, end_date: date):
     if start_date < date(2026, 1, 1) or end_date > date(2026, 2, 1) or start_date >= end_date:
         from fastapi import HTTPException
         raise HTTPException(422, "Date range must be within January 2026 and end_date must be later than start_date")
-    df = load_matched(cutoff_time)
+
+
+def in_date_range(df: pd.DataFrame, start_date: date, end_date: date):
     if df.empty:
         return df
     stamps = pd.to_datetime(df.startTime, utc=True).dt.tz_convert(LONDON).dt.date
     return df[(stamps >= start_date) & (stamps < end_date)].copy()
+
+
+def selected(start_date: date, end_date: date, cutoff_time: str):
+    validate_range(start_date, end_date)
+    return in_date_range(load_hourly_matched(cutoff_time), start_date, end_date)
 
 
 @app.get(PREFIX + "/health", response_model=HealthResponse)
@@ -71,7 +87,34 @@ def metadata():
 @app.get(PREFIX + "/summary", response_model=SummaryResponse)
 def summary(start_date: date = date(2026, 1, 1), end_date: date = date(2026, 2, 1), cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")):
     df = selected(start_date, end_date, cutoff_time)
-    return {**metrics(df), "expected_intervals": len(df) if not df.empty else (end_date - start_date).days * 48, "matched_intervals": metrics(df)["sample_count"], "coverage_percent": metrics(df)["sample_count"] / (len(df) or 1) * 100 if not df.empty else None, "quality_counts": df.data_quality_status.value_counts().to_dict() if not df.empty else {}}
+    result = metrics(df)
+    expected_hours = len(df)
+    expected_actuals = (end_date - start_date).days * 48
+    all_actuals = load_csv("actual_wind_january_2026.csv")
+    actual_count = 0
+    if not all_actuals.empty:
+        all_actuals["startTime"] = pd.to_datetime(all_actuals.startTime, utc=True)
+        stamps = all_actuals.startTime.dt.tz_convert(LONDON).dt.date
+        actual_count = int(((stamps >= start_date) & (stamps < end_date)).sum())
+    eligible = int(df.eligible_forecast_versions.gt(0).sum()) if not df.empty else 0
+    hourly_actuals = int(df.actual_generation_mw.notna().sum()) if not df.empty else 0
+    matched = result["sample_count"]
+    return {
+        **result,
+        "expected_intervals": expected_hours,
+        "matched_intervals": matched,
+        "coverage_percent": matched / expected_hours * 100 if expected_hours else None,
+        "expected_hourly_intervals": expected_hours,
+        "eligible_forecast_intervals": eligible,
+        "forecast_availability_percent": eligible / expected_hours * 100 if expected_hours else None,
+        "hourly_actual_coverage_percent": hourly_actuals / expected_hours * 100 if expected_hours else None,
+        "expected_actual_intervals": expected_actuals,
+        "actual_records_observed": actual_count,
+        "actual_coverage_percent": actual_count / expected_actuals * 100 if expected_actuals else None,
+        "missing_forecasts": int(df.forecast_generation_mw.isna().sum()) if not df.empty else expected_hours,
+        "missing_hourly_actuals": expected_hours - hourly_actuals,
+        "quality_counts": df.data_quality_status.value_counts().to_dict() if not df.empty else {},
+    }
 
 
 @app.get(PREFIX + "/timeseries")
@@ -84,7 +127,7 @@ def timeseries(start_date: date = date(2026, 1, 1), end_date: date = date(2026, 
 
 @app.get(PREFIX + "/accuracy/daily")
 def daily(cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")):
-    df = load_matched(cutoff_time)
+    df = load_hourly_matched(cutoff_time)
     if df.empty:
         return []
     df["delivery_date"] = pd.to_datetime(df.startTime, utc=True).dt.tz_convert(LONDON).dt.date.astype(str)
@@ -97,7 +140,7 @@ def daily(cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0
 
 @app.get(PREFIX + "/accuracy/monthly")
 def monthly(cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")):
-    df = load_matched(cutoff_time)
+    df = load_hourly_matched(cutoff_time)
     result = metrics(df)
     return {"month": "2026-01", "expected_interval_count": len(df), "matched_interval_count": result["sample_count"], "coverage_percent": result["sample_count"] / len(df) * 100 if len(df) else None, **result}
 
@@ -134,7 +177,8 @@ def forecast_versions(start_time: datetime, cutoff_time: str = Query(DEFAULT_CUT
     chosen, eligible_versions = select_versions(version_rows, cutoff)
     actuals = load_csv("actual_wind_january_2026.csv")
     actuals["startTime"] = pd.to_datetime(actuals.startTime, utc=True) if not actuals.empty else pd.Series(dtype="datetime64[ns, UTC]")
-    actual = actuals[actuals.startTime == start].generation_mw.iloc[0] if not actuals.empty and (actuals.startTime == start).any() else None
+    hour_actuals = actuals[actuals.startTime.isin([start, start + pd.Timedelta(minutes=30)])] if not actuals.empty else pd.DataFrame()
+    actual = float(hour_actuals.generation_mw.mean()) if len(hour_actuals) == 2 else None
     versions = []
 
     for row in sorted(version_rows, key=lambda item: (pd.Timestamp(item["publishTime"]).tz_convert("UTC"), json.dumps(item, sort_keys=True, default=str))):
@@ -148,13 +192,40 @@ def forecast_versions(start_time: datetime, cutoff_time: str = Query(DEFAULT_CUT
 def quality(cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")):
     p = DATA.parent / "metadata" / "ingestion_report.json"
     report = json.loads(p.read_text()) if p.exists() else {"status": "not_ingested", "sources": ["FUELHH", "WINDFOR"]}
-    matched = load_matched(cutoff_time)
+    matched = load_hourly_matched(cutoff_time)
     counts = matched.data_quality_status.value_counts().to_dict() if not matched.empty else {}
     eligible_starts = int(matched.loc[matched.eligible_forecast_versions > 0, "startTime"].nunique()) if not matched.empty else 0
     matched_count = int(counts.get("matched", 0))
     expected_count = len(matched)
+    actuals = load_csv("actual_wind_january_2026.csv")
+    forecasts = load_csv("wind_forecast_versions_january_2026.csv")
+    expected_actual_count = 1488
+    observed_actual_count = int(actuals.startTime.nunique()) if not actuals.empty else 0
     quality_counts = report.get("quality", {})
-    return {**report, "cutoff_time": cutoff_time, "expected_actual_intervals": expected_count, "actual_records_observed": int(matched.actual_generation_mw.notna().sum()) if not matched.empty else 0, "eligible_forecast_delivery_intervals": eligible_starts, "matched_intervals_at_cutoff": matched_count, "coverage_percent_at_cutoff": matched_count / expected_count * 100 if expected_count else None, "missing_forecasts_at_cutoff": int(counts.get("missing_forecast", 0)), "missing_actuals": int(counts.get("missing_actual", 0)), "invalid_source_records": int(quality_counts.get("invalid_records", 0)), "cache_status": "processed CSV cache; invalidated by file modification time"}
+    return {
+        **report,
+        "cutoff_time": cutoff_time,
+        "expected_actual_intervals": expected_actual_count,
+        "actual_records_observed": observed_actual_count,
+        "actual_coverage_percent": observed_actual_count / expected_actual_count * 100,
+        "expected_hourly_delivery_starts": expected_count,
+        "expected_intervals": expected_count,
+        "coverage_denominator": "expected hourly delivery starts",
+        "forecast_versions": len(forecasts),
+        "forecast_delivery_starts_observed": int(forecasts.startTime.nunique()) if not forecasts.empty else 0,
+        "eligible_forecast_delivery_intervals": eligible_starts,
+        "forecast_availability_percent": eligible_starts / expected_count * 100 if expected_count else None,
+        "matched_intervals_at_cutoff": matched_count,
+        "coverage_percent": matched_count / expected_count * 100 if expected_count else None,
+        "matched_hourly_coverage_percent": matched_count / expected_count * 100 if expected_count else None,
+        "missing_forecasts_at_cutoff": int(counts.get("missing_forecast", 0)),
+        "missing_actuals": expected_actual_count - observed_actual_count,
+        "missing_hourly_actuals": int(counts.get("missing_actual", 0)),
+        "invalid_source_records": int(quality_counts.get("invalid_records", 0)),
+        "cache_status": "processed CSV cache; invalidated by file modification time",
+        "resolution_method": "WINDFOR is hourly; FUELHH actual MW is averaged from the two half-hour records for each hour. An hourly actual is unavailable unless both half-hour records exist.",
+        "forecast_resolution_note": "Metrics compare hourly WINDFOR starts against actual MW averaged from the matching pair of half-hour FUELHH records.",
+    }
 
 
 def csv_download(filename: str, data: pd.DataFrame):
@@ -177,6 +248,9 @@ def export_matched(start_date: date = date(2026, 1, 1), end_date: date = date(20
     return csv_download("matched.csv", df)
 @app.get(PREFIX + "/export/daily-accuracy.csv")
 def export_daily(cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")): return csv_download("daily-accuracy.csv", pd.DataFrame(daily(cutoff_time)))
+@app.get(PREFIX + "/export/hourly-matched.csv")
+def export_hourly_matched(start_date: date = date(2026, 1, 1), end_date: date = date(2026, 2, 1), cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")):
+    return csv_download("hourly-matched.csv", selected(start_date, end_date, cutoff_time))
 @app.get(PREFIX + "/export/ingestion-report.json")
 def export_report(cutoff_time: str = Query(DEFAULT_CUTOFF, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")):
     report = json.dumps(quality(cutoff_time), indent=2)

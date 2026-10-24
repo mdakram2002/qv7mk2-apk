@@ -44,6 +44,15 @@ type Summary = {
   expected_intervals: number;
   matched_intervals: number;
   coverage_percent: number | null;
+  expected_hourly_intervals: number;
+  eligible_forecast_intervals: number;
+  forecast_availability_percent: number | null;
+  hourly_actual_coverage_percent: number | null;
+  expected_actual_intervals: number;
+  actual_records_observed: number;
+  actual_coverage_percent: number | null;
+  missing_forecasts: number;
+  missing_hourly_actuals: number;
   quality_counts: Record<string, number>;
 };
 type Interval = {
@@ -100,7 +109,7 @@ const nav = [
   ["Forecast history", Clock3],
   ["Data quality", ShieldCheck],
 ] as const;
-const paths: Record<string, string> = { Overview: "/", Intervals: "/intervals", "Forecast history": "/forecast-history", "Data quality": "/data-quality" };
+const paths: Record<string, string> = { Overview: "/", Intervals: "/intervals", "Forecast history": "/forecast-history", "Data quality": "/data-quality", "About this analysis": "/about" };
 
 export default function App() {
   const location = useLocation();
@@ -151,9 +160,7 @@ export default function App() {
     queryFn: () => get<Record<string, unknown>>(`data-quality?cutoff_time=${cutoff}`),
   });
   const rows = series.data ?? [];
-  const chartRows = rows
-    .filter((_, i) => i % 2 === 0)
-    .map((r) => ({
+  const chartRows = rows.map((r) => ({
       ...r,
       time: new Date(r.startTime).toLocaleString("en-GB", {
         day: "2-digit",
@@ -210,10 +217,10 @@ export default function App() {
             </div>
             <ShieldCheck size={16} />
           </div>
-          <div className="side-help">
+          <button className="side-help" onClick={() => setPage("About this analysis")}>
             <CircleHelp size={16} />
             <span>About this analysis</span>
-          </div>
+          </button>
           <div className="avatar-row">
             <div className="avatar">WL</div>
             <div>
@@ -308,7 +315,7 @@ export default function App() {
                   value={fmt(s?.mae_mw)}
                   unit="MW"
                   icon={<Activity size={16} />}
-                  note={`Mean absolute error across ${fmt(s?.sample_count)} matched intervals`}
+                  note={`Mean absolute error across ${fmt(s?.sample_count)} matched hourly pairs`}
                   color="mint"
                 />
                 <Metric
@@ -343,7 +350,7 @@ export default function App() {
                 <div className="coverage-card">
                   <div className="coverage-top">
                     <div>
-                      <span className="metric-title">DATA COVERAGE</span>
+                      <span className="metric-title">HOURLY MATCHED COVERAGE</span>
                       <strong>
                         {s?.coverage_percent == null
                           ? "—"
@@ -359,21 +366,24 @@ export default function App() {
                   </div>
                   <div className="coverage-foot">
                     <span>
-                      {fmt(s?.matched_intervals)} of{" "}
-                      {fmt(s?.expected_intervals)} intervals
+                      {fmt(s?.matched_intervals)} of {fmt(s?.expected_hourly_intervals)} hourly starts
                     </span>
                     <span className="quality-status">
                       <i /> {s ? "Updated" : "Awaiting data"}
                     </span>
                   </div>
+                  <div className="coverage-foot">
+                    <span>Forecast starts available: {fmt(s?.forecast_availability_percent, 1)}%</span>
+                    <span>Half-hour actuals: {fmt(s?.actual_coverage_percent, 1)}%</span>
+                  </div>
                 </div>
               </div>
-              {s && s.coverage_percent !== null && s.coverage_percent < 100 && (
+              {s && (s.coverage_percent !== 100 || s.actual_coverage_percent !== 100 || s.forecast_availability_percent !== 100) && (
                 <div className="alert" role="status">
                   <AlertTriangle size={18} />
                   <div>
-                    <b>Forecast coverage is incomplete</b>
-                    <span>{fmt(s.matched_intervals)} of {fmt(s.expected_intervals)} expected half-hour intervals have an actual and an eligible forecast ({fmt(s.coverage_percent, 1)}%). Retrieved WINDFOR delivery starts are hourly; missing half-hours are not filled.</span>
+                    <b>Source coverage is incomplete</b>
+                    <span>Hourly forecast availability is {fmt(s.forecast_availability_percent, 1)}%; hourly matched coverage is {fmt(s.coverage_percent, 1)}%; half-hour actual coverage is {fmt(s.actual_coverage_percent, 1)}%. Missing source intervals are not filled.</span>
                   </div>
                 </div>
               )}
@@ -459,11 +469,11 @@ export default function App() {
                         </ComposedChart>
                       </ResponsiveContainer>
                     ) : (
-                      <Empty text="Ingest genuine Elexon records to render the half-hourly comparison." />
+                      <Empty text="Ingest genuine Elexon records to render the hourly comparison." />
                     )}
                   </div>
                   <div className="chart-xlabel">
-                    Every second half-hour actual interval is shown to align with the hourly forecast cadence · Europe/London
+                    Actual MW is the average of the two half-hour FUELHH records for each hour · Europe/London
                   </div>
                 </section>
                 <section className="panel error-chart">
@@ -609,7 +619,7 @@ export default function App() {
                 <div>
                   <div className="panel-title">Interval observations</div>
                   <div className="panel-sub">
-                    Actual and selected forecast by half-hourly start time
+                    Hourly forecast and paired actual average
                   </div>
                 </div>
                 <div className="table-controls">
@@ -810,29 +820,29 @@ export default function App() {
                   <small>WINDFOR versions within delivery month</small>
                 </div>
                 <div className="panel quality-tile">
+                  <div className="metric-title">EXPECTED HOURLY STARTS</div>
+                  <strong>{fmt(qualityCount("expected_hourly_delivery_starts"))}</strong>
+                  <small>Independent hourly delivery denominator</small>
+                </div>
+                <div className="panel quality-tile">
                   <div className="metric-title">ELIGIBLE FORECAST STARTS</div>
                   <strong>{fmt(qualityCount("eligible_forecast_delivery_intervals"))}</strong>
                   <small>At {cutoff} Europe/London cutoff</small>
                 </div>
                 <div className="panel quality-tile">
-                  <div className="metric-title">MATCHED INTERVALS</div>
+                  <div className="metric-title">MATCHED HOURLY INTERVALS</div>
                   <strong>{fmt(qualityCount("matched_intervals_at_cutoff"))}</strong>
-                  <small>Actual and eligible forecast available</small>
+                  <small>Both hourly actual and forecast available</small>
                 </div>
                 <div className="panel quality-tile">
-                  <div className="metric-title">MISSING FORECASTS</div>
+                  <div className="metric-title">MISSING HOURLY FORECASTS</div>
                   <strong>{fmt(qualityCount("missing_forecasts_at_cutoff"))}</strong>
-                  <small>Half-hour intervals without an eligible forecast</small>
+                  <small>Expected hourly starts without an eligible version</small>
                 </div>
                 <div className="panel quality-tile">
-                  <div className="metric-title">MISSING ACTUALS</div>
+                  <div className="metric-title">MISSING HALF-HOUR ACTUALS</div>
                   <strong>{fmt(qualityCount("missing_actuals"))}</strong>
-                  <small>Intervals without FUELHH actuals</small>
-                </div>
-                <div className="panel quality-tile">
-                  <div className="metric-title">INVALID SOURCE RECORDS</div>
-                  <strong>{fmt(qualityCount("invalid_source_records"))}</strong>
-                  <small>Invalid source records</small>
+                  <small>Invalid source records: {fmt(qualityCount("invalid_source_records"))}</small>
                 </div>
               </div>
               <section className="panel quality-details">
@@ -863,6 +873,37 @@ export default function App() {
                   </a>
                 </div>
               </section>
+            </section>
+          )}
+          {page === "About this analysis" && (
+            <section className="quality-layout">
+              <div className="panel">
+                <div className="panel-title">Purpose and scope</div>
+                <p className="panel-sub">WindLens compares UK national wind forecasts with actual generation to support day-ahead forecast review. It does not calculate a procurement volume, cost, or saving.</p>
+              </div>
+              <div className="bottom-grid">
+                <section className="panel">
+                  <div className="panel-title">Official sources</div>
+                  <p className="panel-sub">FUELHH actual generation filtered to WIND, and WINDFOR forecast versions. Raw source fields are retained before normalization.</p>
+                </section>
+                <section className="panel">
+                  <div className="panel-title">Historical cutoff</div>
+                  <p className="panel-sub">The selected forecast is the latest version published by {cutoff} Europe/London on the preceding delivery date. This is an analytical assumption, not a confirmed market deadline.</p>
+                </section>
+                <section className="panel">
+                  <div className="panel-title">Resolution and matching</div>
+                  <p className="panel-sub">Forecasts are hourly while FUELHH actuals are half-hourly. Hourly actual MW is the mean of both half-hour readings that start in that hour. If either is unavailable, the hourly actual is missing.</p>
+                </section>
+                <section className="panel">
+                  <div className="panel-title">Metrics</div>
+                  <p className="panel-sub">Error is forecast minus actual. MAE is average absolute error; RMSE penalizes larger errors; bias is mean signed error (positive means overforecast); WAPE is total absolute error divided by total actual generation.</p>
+                </section>
+              </div>
+              <div className="panel quality-details">
+                <div className="panel-title">Limitations</div>
+                <p className="panel-sub">The cached forecast publication search begins 18 December 2025, so older publication history is not proven complete. Accuracy describes the retrieved sample and cutoff assumption. Demand, prices, and other generation are outside this analysis.</p>
+                <button className="download" onClick={() => setPage("Data quality")}>View data quality and provenance</button>
+              </div>
             </section>
           )}
           <footer>

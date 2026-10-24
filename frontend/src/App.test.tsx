@@ -1,8 +1,14 @@
-import { render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  window.history.replaceState({}, '', '/');
+});
 
 describe('WindLens dashboard', () => {
   it('shows the overview and explicit empty data state without a backend', async () => {
@@ -13,7 +19,16 @@ describe('WindLens dashboard', () => {
     expect(await screen.findByText(/Data unavailable/)).toBeTruthy();
   });
 
-  it('shows incomplete-coverage guidance from the API summary', async () => {
+  it('opens the methodology page from the analysis help button', () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<BrowserRouter><QueryClientProvider client={client}><App /></QueryClientProvider></BrowserRouter>);
+    fireEvent.click(screen.getByRole('button', { name: /About this analysis/ }));
+    expect(screen.getByRole('heading', { name: 'About this analysis' })).toBeTruthy();
+    expect(screen.getByText('Resolution and matching')).toBeTruthy();
+  });
+
+  it('shows resolution-aware coverage guidance from the API summary', async () => {
     const payloads: Record<string, unknown> = {
       summary: {
         sample_count: 744,
@@ -21,10 +36,19 @@ describe('WindLens dashboard', () => {
         rmse_mw: 2611,
         bias_mw: 1840,
         wape_percent: 18.2,
-        expected_intervals: 1488,
+        expected_intervals: 744,
         matched_intervals: 744,
-        coverage_percent: 50,
-        quality_counts: { matched: 744, missing_forecast: 744 },
+        coverage_percent: 100,
+        expected_hourly_intervals: 744,
+        eligible_forecast_intervals: 700,
+        forecast_availability_percent: 94.1,
+        hourly_actual_coverage_percent: 100,
+        expected_actual_intervals: 1488,
+        actual_records_observed: 1488,
+        actual_coverage_percent: 100,
+        missing_forecasts: 0,
+        missing_hourly_actuals: 0,
+        quality_counts: { matched: 744 },
       },
       'accuracy/daily': [],
       timeseries: [],
@@ -37,7 +61,7 @@ describe('WindLens dashboard', () => {
     }));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<BrowserRouter><QueryClientProvider client={client}><App /></QueryClientProvider></BrowserRouter>);
-    expect(await screen.findByText('Forecast coverage is incomplete')).toBeTruthy();
-    expect(screen.getByText(/744 of 1,488 expected half-hour intervals/)).toBeTruthy();
+    expect(await screen.findByText('Source coverage is incomplete')).toBeTruthy();
+    expect(screen.getByText(/Hourly forecast availability is 94.1%/)).toBeTruthy();
   });
 });

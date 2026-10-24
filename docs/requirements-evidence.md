@@ -1,39 +1,38 @@
 # Requirements-to-evidence audit
 
-Audit date: 23 October 2026. “Verified locally” means checked against this checkout, its committed data, or commands run in this environment. It does not mean the public deployment was reachable.
+Audit date: 24 October 2026. This records evidence from the current checkout and runs performed during the audit. Local verification does not establish public deployment availability.
 
-## Findings and changes
+## Findings and fixes
 
-| Severity | Finding and evidence | Change | Verification |
+| Severity | Evidence-based finding | Fix | Verification |
 |---|---|---|---|
-| High | `select_versions` sorted publication timestamps as strings, which can misorder different UTC offsets (`backend/app/core.py`). | Compare timezone-aware UTC instants; keep deterministic tie ordering. | Added regression test with offset-spelled times; backend suite passes. |
-| High | The matched CSV route exported the whole month and ignored the interval explorer's selected date/status (`backend/app/main.py`, `frontend/src/App.tsx`). | Added validated date/status filters and passes the explorer's active filters into the download link. | API test confirms a one-day matched-only export has 24 rows. |
-| High | Forecast history accepted malformed/naive starts with potential server errors and did not return the delivery start or eligible count. The UI queried a fixed noon interval without identifying it as the delivery interval. | Validate timezone-aware January start, return provenance and missing-selection status, add delivery-hour selection, and distinguish delivery start from publication time in the table. | API tests cover invalid starts; frontend typecheck/build pass. |
-| Medium | Health readiness only checked file existence, and data quality displayed absent values as zeros. | Health checks populated actual/forecast CSVs and a successful ingestion report; quality counts are cutoff-aware and loading/errors do not masquerade as zero. | Backend API suite passes; frontend typecheck/build pass. |
-| Medium | Overview chart labels showed time-of-day only across a full month and called the joined series half-hourly despite hourly forecasts. | Show date and time, sample hourly actual points against hourly forecasts, and state the sampling cadence. | Frontend lint/typecheck/build pass; visual public check remains blocked. |
-| Medium | README deployment statements were stale; the Render Blueprint used a placeholder CORS origin, and Vercel commands conflicted with the selected `frontend` root. | Updated deployment docs/config, set the production Vercel origin in `render.yaml`, and aligned Vercel commands with the `frontend` root. | Configuration inspected locally; deployed services need an external redeploy and live check. |
+| High | Accuracy and interval error rows paired hourly WINDFOR forecasts with a single half-hour FUELHH reading and divided 744 matches by 1,488 half-hours. | Compare hourly forecasts with the mean MW of both half-hour actual records. Use 744 expected hourly starts for forecast/matched coverage and 1,488 expected records for actual coverage. Keep the explorer hourly and export the complete half-hour actual source separately. | Aggregation fixture; API/export reconciliation; 744 matched hourly pairs and 1,488 actual records. |
+| High | The committed monthly scores came from the incorrect hourly/half-hour pairing. | Recalculate all scores from the canonical hourly matched sample and make summary, daily/monthly endpoints, charts, and hourly CSV export share the same function. | Independently calculate summary values from `/export/hourly-matched.csv` in API tests. |
+| Medium | Ingestion errors did not report a safe response excerpt and classified some HTTP failures only as generic retries. | Log failed request URL, status, content type, and a bounded response excerpt; retry transient 429/5xx and transport errors; fail on other 4xx responses. | Live one-day probes plus MockTransport tests for HTTP 400/503, malformed JSON, empty arrays, and pagination metadata. |
+| Medium | Existing quality copy conflated forecast availability with half-hour actual coverage. | Add distinct denominators and resolution labels to the summary and data-quality API and dashboard. | API assertions and frontend coverage test. |
+| Medium | Conflicting or stale documentation described 50% coverage and old scores. | Update README, data notes, methodology/API docs, known limitations, and audit evidence to describe hourly aggregation and the retrieval boundary. | Cross-checked against regenerated report and API tests. |
 
-## Requirement status
+## Requirements-to-evidence matrix
 
-| Requirement | Evidence in this repository | Status |
+| Requirement | Evidence | Status |
 |---|---|---|
-| Official sources only; FUELHH actuals filtered to WIND and WINDFOR forecasts retained with `startTime`, `publishTime`, and `generation` | `scripts/ingest_january.py`, `data/raw/`, `data/processed/`, report source filters. Official references: [FUELHH](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/FUELHH/stream), [WINDFOR](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/WINDFOR/stream). | Implemented; source files and mappings verified locally. Fresh API retrieval not rerun. |
-| January 1–31, 2026 delivery period | Raw and processed files, ingestion report, API date-range validation. | Verified locally: 1,488 expected half-hour intervals. |
-| Timestamp mapping and UTC normalization | Ingestion maps source timestamps; raw rows preserve original spellings; API uses UTC and UI renders Europe/London. | Verified locally; selection ordering bug fixed and tested. |
-| Latest forecast published by configurable D-1 cutoff; no look-ahead | `cutoff_for`, `select_versions`, `load_matched`, `/forecast-versions`; tests cover exact cutoff and offset times. | Implemented and unit-tested. Completeness of versions before the retrieval boundary is unverified. |
-| Forecast resolution and missing coverage handled honestly | Raw file has 744 January delivery starts, each 60 minutes apart; actual CSV has 1,488 30-minute starts. Matched file/report shows 744 matched (50%). | Verified from committed records; no interpolation or duplication. |
-| Independent MAE, RMSE, bias, WAPE checks | `backend/app/core.py`; hand-calculated fixture in `backend/tests/test_core.py`; committed monthly CSV independently recalculated. | Verified locally. Current sample results: MAE 2,107.18 MW; RMSE 2,611.24 MW; bias +1,839.92 MW; WAPE 18.19%. |
-| API endpoints, input validation, exports | FastAPI routes in `backend/app/main.py`; API tests in `backend/tests/test_api.py`; `/docs` configured. | Local tests pass; public endpoint response not verified. |
-| Dashboard pages and API-derived data | React queries in `frontend/src/App.tsx`; interval and history screens; cutoff-aware overview. | Implemented and built locally. No screenshot or external browser audit available. |
-| Docker, Compose, health, CI | `backend/Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml`, `.github/workflows/ci.yml`, Render/Vercel config. | Both Docker images built; Compose API and frontend reported healthy; local health and summary endpoints responded. CI-equivalent commands pass locally. |
-| Public deployment and CORS | Owner-provided URLs: [frontend](https://windlens.vercel.app/), [health](https://qv7mk2-apk.onrender.com/api/v1/health), [API docs](https://qv7mk2-apk.onrender.com/docs). | URLs supplied but live requests failed from this environment; availability, CORS, exports, and direct-route refresh are unverified. |
-| README, method, limitations, and AI disclosure | `README.md`, `docs/architecture.md`, `docs/data-dictionary.md`, `docs/known-limitations.md`; OpenAI Codex disclosure. | Updated. |
-| Random/anonymous repository requirement | Git remote: `mdakram2002/qv7mk2-apk`. | Name is random-looking; owner is identifiable. Anonymity is not met if it applies to ownership. No ownership change made. |
-| Unlisted video <=10 minutes and submission links | `docs/video-script.md`; README records no upload. | Outstanding; video must be recorded, uploaded, and checked by owner. |
+| Official FUELHH actuals filtered to `WIND`, and WINDFOR versions with `startTime`, `publishTime`, `generation` | `scripts/ingest_january.py`, raw JSON, report. Official docs: [FUELHH](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/FUELHH/stream), [WINDFOR](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/WINDFOR/stream). Read-only sample API requests returned HTTP 200 with JSON and expected fields. | Sample routes validated live; full month was reprocessed from cached raw data, not freshly downloaded. |
+| January 1–31, 2026, expected intervals and resolutions | Cached source data: 1,488 actual starts at 30-minute cadence; 744 forecast starts at 60-minute cadence. | Verified locally. January has 1,488 expected half-hour actuals and 744 expected hourly starts. |
+| Timezone-aware D-1 cutoff and latest eligible version, without future leakage | `cutoff_for`, `select_versions`, hourly/interval loaders, forecast history. Times compare in UTC and cutoff is configured in Europe/London. | Tests cover exact cutoff, offset-aware ordering, D-1, and DST boundary. Publication history before 18 December 2025 remains unverified. |
+| Resolution-aware comparisons and missing data | Hourly actual is mean MW of both corresponding FUELHH half-hours. The explorer uses hourly rows; the actuals export retains half-hour source records. | At cached default cutoff: actuals 1,488/1,488; eligible forecasts 744/744; matched hourly pairs 744/744. |
+| Independently validated metrics | Hand-calculated metric fixtures and API tests compare summary scores with hourly CSV records. | Cached sample at 10:00: n=744; MAE 2,122.81 MW; RMSE 2,616.69 MW; bias +1,840.30 MW; WAPE 18.33%. |
+| API, filtering, and exports | FastAPI routes under `/api/v1`; `/export/matched.csv` and `/export/hourly-matched.csv` both export the hourly analysis; actuals CSV retains half-hour data. | 31 backend tests pass. Public `/summary` responded HTTP 200 but still serves the prior code and metrics. |
+| React UI, route behavior, and accessibility | `frontend/src/App.tsx`, About page, Vercel rewrite, and React tests. | 3 frontend tests, lint, typecheck, and production build pass locally. Local Docker serves `/about`; public Vercel returned 404 before this rewrite was deployed. Incognito browser review remains outstanding. |
+| Docker, CI, secrets, deployment configuration | Dockerfiles, Compose, GitHub Actions, Render and Vercel config. | Latest images rebuilt; Compose API/frontend started healthy; API summary/export and frontend About route were verified, then services stopped. No secrets added. Public app/API require redeployment. |
+| README and product disclosures | README and docs state data scope, methods, cache boundaries, AI disclosure, and deployment/video status. | Updated locally. |
+| Random repository name and anonymity | Remote is `mdakram2002/qv7mk2-apk`. | Repository name is random-looking; ownership remains personally identifiable and was not changed. |
+| Unlisted video <=10 minutes and incognito URL checks | `docs/video-script.md`; public app/API URLs listed in README. | Video not recorded or uploaded; public links/incognito access need owner verification. |
 
-## Current verification gaps
+## Data and source limitations
 
-- Official Elexon endpoint documentation pages render through a JavaScript application in the available browser tool. The API/developer portal and endpoint-index search results were reviewed, and the committed raw responses were inspected, but a fresh live ingestion and full pagination/history audit were not completed.
-- Outbound requests to the supplied Vercel and Render URLs were refused from this environment. Their actual public state cannot be claimed.
-- Docker image builds, Compose startup, and actual browser/incognito accessibility still need verification in an environment with Docker daemon and external network access.
-- The public YouTube video and anonymous repository ownership remain account-owner tasks.
+- The raw cache includes 26,280 WINDFOR rows, of which 18,080 have January delivery starts. Its publication-time search begins on 18 December 2025; the earliest returned January-delivery publication is 30 December, and the longest observed forecast lead is 66.5 hours. That supports the retrieval window for the observed data, but does not prove the source archive is complete before the search boundary.
+- The live API probe checked one day for each dataset only. A full-month live refresh, complete pagination audit, and retrieval-boundary completeness check remain outstanding.
+- Public Vercel root, Render health, summary, and CORS preflight were checked over HTTP. Vercel `/about` returned 404, while Render `/summary` returned the old 50% half-hour calculation. Local fixes are in this checkout, but both services need redeployment before the deployed behavior can be revalidated. No incognito browser session was available.
+- Cached reprocessing used `python scripts/ingest_january.py --from-cache`. It retained the source retrieval timestamp and records the processing timestamp separately.
+- The 10:00 Europe/London cutoff is an analytical assumption, not a verified procurement deadline.
+- Logged-out incognito access, deployed exports, and direct routes must be retested after redeployment. Repository anonymity and YouTube upload also require account-owner action.

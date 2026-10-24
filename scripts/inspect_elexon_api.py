@@ -10,6 +10,8 @@ BASE = "https://data.elexon.co.uk/bmrs/api/v1/datasets"
 def report(client: httpx.Client, url: str, params: dict) -> dict:
     response = client.get(url, params=params)
     print(f"\nURL: {response.url}\nHTTP: {response.status_code}\nContent-Type: {response.headers.get('content-type')}")
+    if response.is_error:
+        print(f"Response excerpt: {response.text[:400].replace(chr(10), ' ')}")
     response.raise_for_status()
     payload = response.json()
     rows = payload.get("data", payload) if isinstance(payload, dict) else payload
@@ -30,9 +32,9 @@ def main():
     if not args.live:
         parser.error("Pass --live to make the requested live API checks")
     with httpx.Client(timeout=40, headers={"Accept": "application/json"}) as client:
-        report(client, f"{BASE}/FUELHH", {"settlementDateFrom": "2026-01-01", "settlementDateTo": "2026-01-01", "fuelType": "WIND"})
+        report(client, f"{BASE}/FUELHH/stream", {"settlementDateFrom": "2026-01-01", "settlementDateTo": "2026-01-01", "fuelType": "WIND"})
         # A single day confirms the historical publication-time filter contract.
-        report(client, f"{BASE}/WINDFOR", {"publishDateTimeFrom": "2025-12-31T00:00:00Z", "publishDateTimeTo": "2026-01-01T00:00:00Z"})
+        report(client, f"{BASE}/WINDFOR/stream", {"publishDateTimeFrom": "2025-12-31T00:00:00Z", "publishDateTimeTo": "2026-01-01T00:00:00Z"})
 
 
 if __name__ == "__main__":

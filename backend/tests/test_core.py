@@ -2,11 +2,15 @@ from datetime import date, datetime, timezone
 
 import pandas as pd
 
-from app.core import cutoff_for, deduplicate_records, match_records, metrics, select_versions, validate_measurement
+from app.core import aggregate_actuals_hourly, cutoff_for, deduplicate_records, load_matched, load_hourly_matched, match_records, metrics, select_versions, validate_measurement
 
 
 def test_cutoff_is_timezone_aware_and_january_gmt():
     assert cutoff_for(date(2026, 1, 2)).isoformat() == "2026-01-01T10:00:00+00:00"
+
+
+def test_cutoff_uses_europe_london_across_dst():
+    assert cutoff_for(date(2026, 3, 30)).isoformat() == "2026-03-29T09:00:00+00:00"
 
 
 def test_select_latest_at_or_before_cutoff():
@@ -85,3 +89,23 @@ def test_metrics_match_hand_calculated_four_record_fixture():
     assert result["rmse_mw"] == (750**0.5)
     assert result["bias_mw"] == -5
     assert result["wape_percent"] == 100 / 1000 * 100
+
+
+def test_hourly_actual_is_mean_of_two_half_hours_and_incomplete_hour_is_missing():
+    starts = pd.date_range("2026-01-01T00:00:00Z", periods=2, freq="h")
+    actual = pd.DataFrame({
+        "startTime": ["2026-01-01T00:00:00Z", "2026-01-01T00:30:00Z", "2026-01-01T01:00:00Z"],
+        "generation_mw": [100.0, 120.0, 200.0],
+    })
+    result = aggregate_actuals_hourly(actual, starts)
+    assert result.iloc[0].actual_half_hour_count == 2
+    assert result.iloc[0].actual_generation_mw == 110
+    assert result.iloc[1].actual_half_hour_count == 1
+    assert pd.isna(result.iloc[1].actual_generation_mw)
+
+
+def test_matched_loader_is_the_canonical_hourly_sample():
+    canonical = load_hourly_matched()
+    compatibility = load_matched()
+    assert len(compatibility) == 744
+    assert compatibility.equals(canonical)

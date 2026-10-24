@@ -6,13 +6,13 @@ All routes use the `/api/v1` prefix. The interactive API documentation is availa
 |---|---|
 | `GET /health` | Service status and readiness |
 | `GET /metadata` | Analysis scope, data sources, cutoff, and ingestion report |
-| `GET /summary` | Aggregate metrics and coverage; accepts `start_date`, `end_date`, and `cutoff_time` |
-| `GET /timeseries` | Interval time series; accepts the same date and cutoff parameters |
-| `GET /accuracy/daily`, `GET /accuracy/monthly` | Daily or monthly accuracy scores |
+| `GET /summary` | Hourly matched-pair metrics plus separate half-hour actual coverage; accepts `start_date`, `end_date`, and `cutoff_time` |
+| `GET /timeseries` | Hourly comparison series with actuals averaged from both half-hour FUELHH records |
+| `GET /accuracy/daily`, `GET /accuracy/monthly` | Hourly daily or monthly scores; expected denominator is 24 hourly starts per January day |
 | `GET /intervals` | Paginated interval records with quality filters |
 | `GET /forecast-versions?start_time=...` | Forecast versions for one timezone-aware delivery start, the cutoff, eligible count, selected version, and selection reasons |
-| `GET /data-quality` | Ingestion report plus cutoff-specific eligible coverage, matched and missing counts |
-| `GET /export/{actuals,forecasts,matched,daily-accuracy}.csv` | CSV download with an attachment filename |
+| `GET /data-quality` | Ingestion report plus distinct half-hour actual and hourly forecast availability/match counts |
+| `GET /export/{actuals,forecasts,matched,daily-accuracy,hourly-matched}.csv` | CSV download with an attachment filename; actuals retain half-hourly source rows, while both matched exports use the canonical hourly sample |
 | `GET /export/ingestion-report.json` | Ingestion report plus cutoff-specific quality counts; accepts `cutoff_time` |
 
-The API accepts date ranges within January 2026. Page sizes are limited to 500 records. The forecast cutoff defaults to 10:00 Europe/London on the day before delivery. The matched CSV export accepts `start_date`, `end_date`, `cutoff_time`, and optional `quality_status` filters so it can match the interval explorer selection.
+The API accepts date ranges within January 2026. Page sizes are limited to 500 records. The forecast cutoff defaults to 10:00 Europe/London on the day before delivery. This is an analytical assumption. Hourly forecast availability and match coverage use the 744 expected hourly starts; actual coverage uses the 1,488 expected half-hour FUELHH records. The matched CSV accepts `start_date`, `end_date`, `cutoff_time`, and optional `quality_status` filters so it matches the interval explorer. `/export/hourly-matched.csv` is an explicit alias for the same hourly comparison sample.

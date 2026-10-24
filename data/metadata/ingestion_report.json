@@ -1,14 +1,35 @@
 {
   "status": "success",
   "retrieved_at": "2026-10-23T16:15:36.432154+00:00",
+  "processed_at": "2026-10-24T06:43:47.605272+00:00",
+  "retrieval_mode": "validated_committed_raw_cache",
   "period": [
     "2026-01-01",
     "2026-02-01"
   ],
+  "sources": {
+    "actuals": {
+      "endpoint": "https://data.elexon.co.uk/bmrs/api/v1/datasets/FUELHH",
+      "filters": {
+        "fuelType": "WIND",
+        "settlementDateFrom": "2026-01-01",
+        "settlementDateTo": "2026-01-31"
+      }
+    },
+    "forecasts": {
+      "endpoint": "https://data.elexon.co.uk/bmrs/api/v1/datasets/WINDFOR",
+      "filters": {
+        "publishDateTimeFrom": "2025-12-18T00:00:00Z",
+        "publishDateTimeTo": "2026-02-01T00:00:00Z"
+      }
+    }
+  },
   "cutoff_default": "10:00",
   "cutoff_timezone": "Europe/London",
   "forecast_publish_search_start": "2025-12-18T00:00:00Z",
-  "forecast_search_start_assumption": "14-day publication lookback; completeness before the search boundary has not been established",
+  "forecast_search_start_assumption": "Search began 14 days before the delivery month and extends beyond the longest observed 66.5-hour forecast lead; it does not prove older archive completeness.",
+  "earliest_retrieved_january_delivery_publish_time": "2025-12-30T02:30:00+00:00",
+  "max_observed_january_forecast_lead_hours": 66.5,
   "request_counts": [
     {
       "dataset": "FUELHH",
@@ -88,7 +109,10 @@
   "actual_records": 1488,
   "forecast_versions": 18080,
   "forecast_unique_delivery_starts": 744,
-  "expected_intervals": 1488,
+  "actual_resolution_minutes_observed": 30,
+  "forecast_resolution_minutes_observed": 60,
+  "expected_actual_intervals": 1488,
+  "expected_hourly_intervals": 744,
   "quality": {
     "actual_exact_duplicates": 0,
     "actual_conflicts": 0,
@@ -99,32 +123,20 @@
     "forecast_records_outside_delivery_period": 8200,
     "actual_duplicates": 0
   },
+  "actual_records_observed": 1488,
+  "actual_coverage_percent": 100.0,
+  "hourly_actuals_available": 744,
   "missing_actuals": 0,
-  "missing_forecasts": 744,
+  "missing_hourly_actuals": 0,
+  "missing_forecasts": 0,
   "matched_intervals": 744,
-  "coverage_percent": 50.0,
-  "forecast_resolution_note": "Retrieved WINDFOR records cover hourly delivery starts; alternate half-hour starts have no forecast row and are left missing.",
-  "sources": {
-    "actuals": {
-      "endpoint": "https://data.elexon.co.uk/bmrs/api/v1/datasets/FUELHH",
-      "filters": {
-        "fuelType": "WIND",
-        "settlementDateFrom": "2026-01-01",
-        "settlementDateTo": "2026-01-31"
-      }
-    },
-    "forecasts": {
-      "endpoint": "https://data.elexon.co.uk/bmrs/api/v1/datasets/WINDFOR",
-      "filters": {
-        "publishDateTimeFrom": "2025-12-18T00:00:00Z",
-        "publishDateTimeTo": "2026-02-01T00:00:00Z"
-      }
-    }
-  },
-  "actual_resolution_minutes_observed": 30,
-  "forecast_resolution_minutes_observed": 60,
-  "coverage_denominator": "expected half-hour delivery intervals (1,488)",
+  "coverage_percent": 100.0,
+  "eligible_forecast_delivery_starts": 744,
+  "forecast_availability_percent": 100.0,
+  "matched_coverage_denominator": "expected hourly delivery starts",
+  "actual_aggregation": "Mean MW from the two FUELHH half-hour intervals starting in each hour; incomplete hours remain missing.",
+  "forecast_resolution_note": "Observed WINDFOR delivery starts are hourly; metrics compare them with hourly actual MW averaged from both corresponding half-hour FUELHH records.",
   "warnings": [
-    "Forecast publication search began 14 days before delivery. Completeness of versions published before that boundary has not been established."
+    "Forecast publication search began 2025-12-18; the earliest returned January-delivery version was published 2025-12-30, and the maximum observed lead was 66.5 hours. Older source-history completeness before the search boundary is not independently established."
   ]
 }
